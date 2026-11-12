@@ -1,5 +1,5 @@
 import { Database, type SQLQueryBindings } from 'bun:sqlite';
-import { type Codec, type Dialect, type IDatabase, type ILogger, type Primitive, type Row } from './index';
+import type { Codec, Dialect, IDatabase, ILogger, Primitive, Row } from './index';
 
 const TYPES: Record<Primitive, string> = {
   BINARY:   'BLOB',
@@ -71,7 +71,7 @@ class BunSQLite implements IDatabase {
       this.conn.run(commit);
       return result;
     } catch (error) {
-      this.conn.exec(rollback);
+      this.conn.run(rollback);
       throw error;
     }
   }

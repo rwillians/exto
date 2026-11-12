@@ -1,5 +1,5 @@
 import { SQL, type TransactionSQL } from 'bun';
-import { type Codec, type Column, type Dialect, type IDatabase, type ILogger, type Primitive, type Row } from './index';
+import type { Codec, Column, Dialect, IDatabase, ILogger, Primitive, Row } from './index';
 
 const TYPES: Record<Primitive, (col: Column) => string> = {
   BINARY:   () => 'BYTEA',
