@@ -1,0 +1,17 @@
+{
+  "name": "@rwillians/exto",
+  "type": "module",
+  "scripts": {
+    "typecheck": "bun check"
+  },
+  "dependencies": {
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^7.1.0-beta"
+  },
+  "peerDependencies": {
+    "typescript": "^7"
+  }
+}

@@ -1,0 +1,6 @@
+/.claude/settings.local.json
+/.claude/TODO.md
+/node_modules
+.DS_Store
+.envrc
+pimp.db
