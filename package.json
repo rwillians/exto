@@ -2,6 +2,7 @@
   "name": "@rwillians/exto",
   "type": "module",
   "scripts": {
+    "test": "bun test",
     "typecheck": "bun check"
   },
   "dependencies": {
