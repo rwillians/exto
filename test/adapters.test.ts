@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
-import { from, into, type IDatabase } from '../src';
+import { ValidationError, from, into, type IDatabase } from '../src';
 import * as pg from '../src/bun-postgres';
 import * as sqlite from '../src/bun-sqlite';
 import { migrate, tasks, things } from './fixtures';
@@ -93,9 +93,24 @@ for (const adapter of adapters) {
       test('rejects invalid rows', async () => {
         const row = { status: 'queued', type: 'x', payload: {}, scheduledAt: new Date() } as const;
 
-        await expect(into(tasks).values({ ...row, status: 'nope' as any }).insert(db)).rejects.toThrow();
-        await expect(into(tasks).values({ ...row, extra: 1 } as any).insert(db)).rejects.toThrow();
-        await expect(into(tasks).values({ ...row, type: 'x'.repeat(49) }).insert(db)).rejects.toThrow();
+        const issuesOf = (values: any) => into(tasks).values(values).insert(db).then(
+          () => { throw new Error('expected a ValidationError'); },
+          (error) => { expect(error).toBeInstanceOf(ValidationError); return (error as ValidationError).issues; },
+        );
+
+        expect(await issuesOf([row, { ...row, status: 'nope' }])).toEqual([{ path: [1, 'status'], message: expect.stringContaining('must be one of') }]);
+        expect(await issuesOf({ ...row, extra: 1 })).toEqual([{ path: [0, 'extra'], message: 'unknown field' }]);
+        expect(await issuesOf({ ...row, type: 'x'.repeat(49) })).toEqual([{ path: [0, 'type'], message: 'must be at most 48 characters long' }]);
+        expect(await issuesOf({ status: 'queued', payload: {}, scheduledAt: new Date() })).toEqual([{ path: [0, 'type'], message: 'is required' }]);
+        expect(await from(tasks).select(db)).toEqual([]);
+      });
+
+      test('validates json columns with third-party standard schemas', async () => {
+        const row = { day: '2026-11-12', amount: 1, ratio: 1, big: 1, body: 'hi' };
+
+        // `doc` is a zod schema
+        await expect(into(things).values({ ...row, doc: { a: ['nope'] } } as any).insert(db)).rejects.toBeInstanceOf(ValidationError);
+        expect(await into(things).values({ ...row, doc: { a: [1] } }).insert(db)).toHaveLength(1);
       });
 
       test('round-trips every primitive', async () => {

@@ -1,4 +1,5 @@
-import { z } from 'zod/v4';
+import * as std from './standard-schema';
+import { ValidationError } from './standard-schema';
 import { type CamelCase, type Expand, camelCase, snakeCase, wrap } from './utils';
 
 // ─── columns ─────────────────────────────────────────────────────────────────
@@ -17,7 +18,7 @@ type Primitive =
   | 'TEXT'
   | 'UUID';
 
-type ColumnProps<S extends z.ZodType = z.ZodType> = {
+type ColumnProps<S extends std.Schema = std.Schema> = {
   type: Primitive;
   schema: S;
   default?: unknown;
@@ -31,14 +32,14 @@ type ColumnProps<S extends z.ZodType = z.ZodType> = {
 type Column<K extends string = string, P extends ColumnProps = ColumnProps> = P & {
   key: K;                        // field name in TS land (camelCase)
   name: string;                  // column name in the database (snake_case)
-  input: z.input<P['schema']>;   // type only
-  output: z.output<P['schema']>; // type only
+  input: std.input<P['schema']>;   // type only
+  output: std.output<P['schema']>; // type only
 };
 
 class ColumnBuilder<P extends ColumnProps> {
   constructor(public readonly props: P) { }
 
-  default(value: z.output<P['schema']> | (() => z.output<P['schema']>)) {
+  default(value: std.output<P['schema']> | (() => std.output<P['schema']>)) {
     return new ColumnBuilder({ ...this.props, default: value } as Expand<P & { default: typeof value }>);
   }
 
@@ -49,9 +50,9 @@ class ColumnBuilder<P extends ColumnProps> {
 
   nullable() {
     if (this.props.primaryKey) throw new Error('Cannot make a primary key column nullable');
-    return new ColumnBuilder({ ...this.props, nullable: true, schema: this.props.schema.nullable() } as unknown as Expand<Omit<P, 'schema'> & {
+    return new ColumnBuilder({ ...this.props, nullable: true, schema: std.nullable(this.props.schema) } as unknown as Expand<Omit<P, 'schema'> & {
       nullable: true;
-      schema: z.ZodNullable<P['schema']>;
+      schema: std.Schema<std.input<P['schema']> | null, std.output<P['schema']> | null>;
     }>);
   }
 
@@ -69,23 +70,23 @@ class ColumnBuilder<P extends ColumnProps> {
 const column = <P extends ColumnProps>(props: P) => new ColumnBuilder(props);
 
 const types = {
-  binary: () => column({ type: 'BINARY', schema: z.instanceof(Uint8Array) }),
-  boolean: () => column({ type: 'BOOLEAN', schema: z.boolean() }),
-  date: () => column({ type: 'DATE', schema: z.iso.date() }),
-  datetime: () => column({ type: 'DATETIME', schema: z.union([z.date(), z.string(), z.number()]).pipe(z.coerce.date()) }),
-  decimal: () => column({ type: 'DECIMAL', schema: z.number() }),
+  binary: () => column({ type: 'BINARY', schema: std.instanceOf(Uint8Array) }),
+  boolean: () => column({ type: 'BOOLEAN', schema: std.boolean() }),
+  date: () => column({ type: 'DATE', schema: std.isoDate() }),
+  datetime: () => column({ type: 'DATETIME', schema: std.date() }),
+  decimal: () => column({ type: 'DECIMAL', schema: std.number() }),
   enum: <const T extends readonly [string, ...string[]]>(values: T) => column({
     type: 'STRING',
-    schema: z.enum(values),
+    schema: std.enumOf(values),
     length: Math.max(...values.map(value => value.length)),
   }),
-  float: () => column({ type: 'FLOAT', schema: z.number() }),
-  integer: () => column({ type: 'INTEGER', schema: z.int() }),
-  json: <S extends z.ZodType>(schema: S) => column({ type: 'JSON', schema }),
-  sequence: () => column({ type: 'SEQUENCE', schema: z.int(), generated: true }),
-  string: ({ size = 255 }: { size?: number } = {}) => column({ type: 'STRING', schema: z.string().max(size), length: size }),
-  text: () => column({ type: 'TEXT', schema: z.string() }),
-  uuid: () => column({ type: 'UUID', schema: z.uuid() }),
+  float: () => column({ type: 'FLOAT', schema: std.number() }),
+  integer: () => column({ type: 'INTEGER', schema: std.integer() }),
+  json: <S extends std.Schema>(schema: S) => column({ type: 'JSON', schema }),
+  sequence: () => column({ type: 'SEQUENCE', schema: std.integer(), generated: true }),
+  string: ({ size = 255 }: { size?: number } = {}) => column({ type: 'STRING', schema: std.string({ max: size }), length: size }),
+  text: () => column({ type: 'TEXT', schema: std.string() }),
+  uuid: () => column({ type: 'UUID', schema: std.uuid() }),
 };
 
 // ─── tables ──────────────────────────────────────────────────────────────────
@@ -316,9 +317,9 @@ class InsertBuilder<T extends Table> {
 
     const cols = Object.values(this.table.columns);
     const insertable = cols.filter(col => !col.generated || isGeneratedByClient(db.dialect, col));
-    const schema = z.array(z.strictObject(Object.fromEntries(insertable.map(col => [col.key, col.schema]))));
+    const schema = std.array(std.strictObject(Object.fromEntries(insertable.map(col => [col.key, col.schema]))));
 
-    const rows = schema.parse(this.rows.map(row => ({
+    const rows = std.parseOrThrow(schema, this.rows.map(row => ({
       ...row,
       ...Object.fromEntries(insertable.map(col => [col.key, resolveInsertValue(col, row)])),
     })));
@@ -409,8 +410,8 @@ class QueryBuilder<T extends Table> {
     const updatable = cols.filter(col => !col.generated && !col.primaryKey);
     const numeric = updatable.filter(col => ['DECIMAL', 'FLOAT', 'INTEGER'].includes(col.type));
 
-    const set = z.strictObject(Object.fromEntries(updatable.map(col => [col.key, col.schema.optional()]))).parse(changes.set ?? {});
-    const inc = z.strictObject(Object.fromEntries(numeric.map(col => [col.key, z.number().optional()]))).parse(changes.inc ?? {});
+    const set = std.parseOrThrow(std.strictObject(Object.fromEntries(updatable.map(col => [col.key, std.optional(col.schema)]))), changes.set ?? {});
+    const inc = std.parseOrThrow(std.strictObject(Object.fromEntries(numeric.map(col => [col.key, std.optional(std.number())]))), changes.inc ?? {});
 
     const assignments = [
       ...Object.entries(set).filter(([, value]) => value !== undefined).map(([key, value]) => ({ col: columnOf(table, key), value, inc: false })),
@@ -524,6 +525,7 @@ export {
   type Primitive,
   type Row,
   type Table,
+  ValidationError,
   column,
   create,
   defineMigrations,
