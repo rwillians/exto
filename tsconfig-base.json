@@ -1,7 +1,8 @@
 {
   "compilerOptions": {
-    "moduleResolution": "Node",
+    "moduleResolution": "bundler",
     "target": "ESNext",
+    "rootDir": "src",
     "declaration": true,
     "declarationDir": "dist/types/",
     "strict": true,
