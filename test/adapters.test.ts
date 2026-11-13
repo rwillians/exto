@@ -90,6 +90,14 @@ for (const adapter of adapters) {
         expect(sqls.find(sql => sql.startsWith('INSERT INTO "tasks"'))).toContain('("id", ');
       });
 
+      test('returns every field given returning: true', async () => {
+        const row = { status: 'queued', type: 'x', payload: {}, scheduledAt: new Date() } as const;
+        const [byDefault] = await into(tasks).values(row).insert(db);
+        const [explicitly] = await into(tasks).values(row).insert(db, { returning: true });
+
+        expect(Object.keys(explicitly!)).toEqual(Object.keys(byDefault!));
+      });
+
       test('returns only the requested fields', async () => {
         const inserted = await into(tasks)
           .values({ status: 'queued', type: 'x', payload: {}, scheduledAt: new Date() })
@@ -118,7 +126,7 @@ for (const adapter of adapters) {
           .insert(db, { returning: [] });
 
         expect(inserted).toEqual([{}, {}]);
-        expect(sqls.find(sql => sql.startsWith('INSERT INTO "tasks"'))).not.toContain('RETURNING');
+        expect(sqls.find(sql => sql.startsWith('INSERT INTO "tasks"'))).toEndWith(' RETURNING 1');
         expect(await from(tasks).orderBy(['type']).select(db, ['type'])).toEqual([{ type: 'x' }, { type: 'y' }]);
       });
 
@@ -210,19 +218,51 @@ for (const adapter of adapters) {
         expect([thing!.amount, thing!.ratio, thing!.flag]).toEqual([12.75, 0.75, true]);
       });
 
+      test('returns only the requested fields', async () => {
+        await insertTasks();
+        const scheduled = from(tasks).where('status', '=', 'scheduled');
+
+        expect(await scheduled.update(db, { set: { type: 'w' }, returning: true })).toEqual([expect.objectContaining({ type: 'w' }), expect.objectContaining({ type: 'w' })]);
+        expect(await scheduled.update(db, { set: { type: 'x' }, returning: ['type'] })).toEqual([{ type: 'x' }, { type: 'x' }]);
+        expect(await scheduled.update(db, { set: { type: 'y' }, returning: [] })).toEqual([{}, {}]);
+        expect(sqls.at(-1)).toEndWith(' RETURNING 1');
+        expect(await scheduled.update(db, { set: { type: 'z' }, returning: false })).toBeUndefined();
+        expect(sqls.at(-1)).not.toContain('RETURNING');
+        expect(await scheduled.select(db, ['type'])).toEqual([{ type: 'z' }, { type: 'z' }]);
+      });
+
       test('rejects empty changes and bounded queries', async () => {
         await expect(from(tasks).update(db, {})).rejects.toThrow('Nothing to update');
+        await expect(from(tasks).update(db, { returning: [] })).rejects.toThrow('Nothing to update');
         await expect(from(tasks).limit(1).update(db, { set: { status: 'running' } })).rejects.toThrow('Cannot update');
       });
     });
 
     describe('delete', () => {
-      test('returns the deleted rows', async () => {
+      test('returns nothing by default', async () => {
         await insertTasks();
-        const deleted = await from(tasks.as('t')).where('status', '=', 'scheduled').delete(db);
+
+        expect(await from(tasks.as('t')).where('status', '=', 'scheduled').delete(db)).toBeUndefined();
+        expect(sqls.at(-1)).not.toContain('RETURNING');
+        expect(await from(tasks).select(db)).toHaveLength(1);
+      });
+
+      test('returns the deleted rows given returning: true', async () => {
+        const [first, second] = await insertTasks();
+        const deleted = await from(tasks.as('t')).where('status', '=', 'scheduled').delete(db, { returning: true });
 
         expect(deleted).toHaveLength(2);
+        expect(deleted).toEqual(expect.arrayContaining([first!, second!]));
         expect(await from(tasks).select(db)).toHaveLength(1);
+      });
+
+      test('returns only the requested fields', async () => {
+        const [first, second, third] = await insertTasks();
+
+        expect(await from(tasks).where('id', '=', first!.id).delete(db, { returning: ['id'] })).toEqual([{ id: first!.id }]);
+        expect(await from(tasks).where('id', 'in', [second!.id, third!.id]).delete(db, { returning: [] })).toEqual([{}, {}]);
+        expect(sqls.at(-1)).toEndWith(' RETURNING 1');
+        expect(await from(tasks).select(db)).toEqual([]);
       });
 
       test('rejects bounded queries', async () => {

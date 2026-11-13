@@ -250,9 +250,32 @@ const run = async (db: IDatabase, { sql, params }: Statement) => {
   }
 };
 
-const renderReturning = (b: SqlBuilder, cols: Column[]) => b
-  .push(' RETURNING ')
-  .join(cols, ', ', col => b.push(ref(col), ' AS ', quote(col.key)));
+// `true` returns every field, a list returns those fields, `false` returns
+// nothing at all
+type Returning = boolean | string[];
+
+const runReturning = async (db: IDatabase, b: SqlBuilder, table: Table, returning: Returning) => {
+  if (returning === false) {
+    await run(db, b.build());
+    return undefined;
+  }
+
+  const cols = returning === true
+    ? Object.values(table.columns)
+    : returning.map(key => columnOf(table, key));
+
+  // an empty RETURNING isn't valid SQL, but it still takes one to know how
+  // many rows were affected
+  if (cols.length === 0) {
+    const rows = await run(db, b.push(' RETURNING 1').build());
+    return rows.map(() => ({}));
+  }
+
+  b.push(' RETURNING ').join(cols, ', ', col => b.push(ref(col), ' AS ', quote(col.key)));
+
+  const rows = await run(db, b.build());
+  return rows.map(decoder(db.dialect, cols));
+};
 
 // ─── where ───────────────────────────────────────────────────────────────────
 
@@ -312,10 +335,10 @@ class InsertBuilder<T extends Table> {
     return new InsertBuilder(this.table, [...this.rows, ...wrap(rows)]);
   }
 
-  insert(db: IDatabase): Promise<Infer<T['columns']>[]>;
+  insert(db: IDatabase, options?: { returning?: true }): Promise<Infer<T['columns']>[]>;
   insert(db: IDatabase, options: { returning: false }): Promise<undefined>;
   insert<K extends keyof T['columns'] & string>(db: IDatabase, options: { returning: K[] }): Promise<Expand<Pick<Infer<T['columns']>, K>>[]>;
-  async insert(db: IDatabase, { returning }: { returning?: string[] | false } = {}) {
+  async insert(db: IDatabase, { returning = true }: { returning?: Returning } = {}) {
     if (this.rows.length === 0) return returning === false ? undefined : [];
 
     const cols = Object.values(this.table.columns);
@@ -335,16 +358,7 @@ class InsertBuilder<T extends Table> {
       .join(insertable, ', ', col => b.param(encode(db.dialect, col, row[col.key])))
       .push(')'));
 
-    // an empty RETURNING isn't valid SQL; every row is inserted (or it throws),
-    // so `returning: []` gets one empty object per row without asking the db
-    if (returning === false || returning?.length === 0) {
-      await run(db, b.build());
-      return returning === false ? undefined : rows.map(() => ({}));
-    }
-
-    const returned = returning ? returning.map(key => columnOf(this.table, key)) : cols;
-    const results = await run(db, renderReturning(b, returned).build());
-    return results.map(decoder(db.dialect, returned));
+    return await runReturning(db, b, this.table, returning);
   }
 }
 
@@ -413,7 +427,10 @@ class QueryBuilder<T extends Table> {
     return rows.map(decoder(db.dialect, cols)) as Expand<Pick<Infer<T['columns']>, K>>[];
   }
 
-  async update(db: IDatabase, changes: Changes<T['columns']>) {
+  update(db: IDatabase, changes: Changes<T['columns']> & { returning: false }): Promise<undefined>;
+  update<K extends keyof T['columns'] & string>(db: IDatabase, changes: Changes<T['columns']> & { returning: K[] }): Promise<Expand<Pick<Infer<T['columns']>, K>>[]>;
+  update(db: IDatabase, changes: Changes<T['columns']> & { returning?: true }): Promise<Infer<T['columns']>[]>;
+  async update(db: IDatabase, { returning = true, ...changes }: Changes<T['columns']> & { returning?: Returning }) {
     this.assertUnbounded('update');
 
     const { table, where } = this.query;
@@ -439,21 +456,21 @@ class QueryBuilder<T extends Table> {
 
     renderWhere(b, where);
 
-    const rows = await run(db, renderReturning(b, cols).build());
-    return rows.map(decoder(db.dialect, cols)) as Infer<T['columns']>[];
+    return await runReturning(db, b, table, returning);
   }
 
-  async delete(db: IDatabase) {
+  delete(db: IDatabase, options: { returning: true }): Promise<Infer<T['columns']>[]>;
+  delete<K extends keyof T['columns'] & string>(db: IDatabase, options: { returning: K[] }): Promise<Expand<Pick<Infer<T['columns']>, K>>[]>;
+  delete(db: IDatabase, options?: { returning?: false }): Promise<undefined>;
+  async delete(db: IDatabase, { returning = false }: { returning?: Returning } = {}) {
     this.assertUnbounded('delete');
 
     const { table, where } = this.query;
-    const cols = Object.values(table.columns);
     const b = new SqlBuilder(db.dialect).push('DELETE FROM ', quote(table.name));
 
     renderWhere(b, where);
 
-    const rows = await run(db, renderReturning(b, cols).build());
-    return rows.map(decoder(db.dialect, cols)) as Infer<T['columns']>[];
+    return await runReturning(db, b, table, returning);
   }
 
   // UPDATE/DELETE ... ORDER BY/LIMIT isn't portable, so refuse it rather than

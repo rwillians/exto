@@ -41,6 +41,9 @@ export const checks = async (db: IDatabase) => {
   const inserted = await into(tasks).values(row).insert(db);
   assert<Equals<typeof inserted, typeof tasks.infer[]>>();
 
+  const insertedAll = await into(tasks).values(row).insert(db, { returning: true });
+  assert<Equals<typeof insertedAll, typeof tasks.infer[]>>();
+
   const insertedIds = await into(tasks).values(row).insert(db, { returning: ['id'] });
   assert<Equals<typeof insertedIds, { id: string }[]>>();
 
@@ -52,6 +55,33 @@ export const checks = async (db: IDatabase) => {
 
   // @ts-expect-error returning uses field keys, not column names
   into(tasks).values(row).insert(db, { returning: ['scheduled_at'] });
+
+  const updated = await from(tasks).update(db, { set: { status: 'running' } });
+  assert<Equals<typeof updated, typeof tasks.infer[]>>();
+
+  const updatedAll = await from(tasks).update(db, { set: { status: 'running' }, returning: true });
+  assert<Equals<typeof updatedAll, typeof tasks.infer[]>>();
+
+  const updatedIds = await from(tasks).update(db, { set: { status: 'running' }, returning: ['id'] });
+  assert<Equals<typeof updatedIds, { id: string }[]>>();
+
+  const updatedEmpties = await from(tasks).update(db, { set: { status: 'running' }, returning: [] });
+  assert<Equals<typeof updatedEmpties, {}[]>>();
+
+  const updatedNothing = await from(tasks).update(db, { set: { status: 'running' }, returning: false });
+  assert<Equals<typeof updatedNothing, undefined>>();
+
+  const deletedNothing = await from(tasks).delete(db);
+  assert<Equals<typeof deletedNothing, undefined>>();
+
+  const deleted = await from(tasks).delete(db, { returning: true });
+  assert<Equals<typeof deleted, typeof tasks.infer[]>>();
+
+  const deletedIds = await from(tasks).delete(db, { returning: ['id'] });
+  assert<Equals<typeof deletedIds, { id: string }[]>>();
+
+  const deletedEmpties = await from(tasks).delete(db, { returning: [] });
+  assert<Equals<typeof deletedEmpties, {}[]>>();
 
   // @ts-expect-error generated columns can't be inserted
   into(tasks).values({ id: 'x', status: 'queued', type: 'a', payload: {}, scheduledAt: new Date() });
