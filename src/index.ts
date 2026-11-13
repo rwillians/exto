@@ -306,7 +306,52 @@ const renderWhere = (b: SqlBuilder, conditions: Condition[], qualifier?: string)
   ? b
   : b.push(' WHERE ').join(conditions, ' AND ', renderCondition(b, qualifier));
 
+// ─── changes ─────────────────────────────────────────────────────────────────
+
+type Changes<C extends Columns> = {
+  set?: InferForUpdate<C>;
+  inc?: { [K in NumericKeys<C>]?: number };
+};
+
+type Assignment = { col: Column; op: 'set' | 'inc' | 'replace'; value?: unknown };
+
+const parseChanges = (table: Table, { set = {}, inc = {}, replace = [] }: { set?: Row; inc?: Row; replace?: string[] }) => {
+  const updatable = Object.values(table.columns).filter(col => !col.generated && !col.primaryKey);
+  const numeric = updatable.filter(col => ['DECIMAL', 'FLOAT', 'INTEGER'].includes(col.type));
+
+  const sets = std.parseOrThrow(std.strictObject(Object.fromEntries(updatable.map(col => [col.key, std.optional(col.schema)]))), set);
+  const incs = std.parseOrThrow(std.strictObject(Object.fromEntries(numeric.map(col => [col.key, std.optional(std.number())]))), inc);
+
+  const replaced = replace.map(key => {
+    const col = updatable.find(col => col.key === key);
+    if (!col) throw new Error(`Cannot replace "${key}": it's not an updatable field of "${table.name}"`);
+    return col;
+  });
+
+  return [
+    ...Object.entries(sets).filter(([, value]) => value !== undefined).map(([key, value]) => ({ col: columnOf(table, key), op: 'set', value })),
+    ...Object.entries(incs).filter(([, value]) => value !== undefined).map(([key, value]) => ({ col: columnOf(table, key), op: 'inc', value })),
+    ...replaced.map(col => ({ col, op: 'replace' })),
+  ] as Assignment[];
+};
+
+// on conflict, `qualifier` tells the row's current value apart from EXCLUDED's
+const renderAssignments = (b: SqlBuilder, assignments: Assignment[], qualifier?: string) => b
+  .join(assignments, ', ', ({ col, op, value }) => {
+    if (op === 'replace') return b.push(ref(col), ' = EXCLUDED.', quote(col.name));
+    if (op === 'inc') return b.push(ref(col), ' = ', ref(col, qualifier), ' + ').param(value);
+    return b.push(ref(col), ' = ').param(encode(b.dialect, col, value));
+  });
+
 // ─── insert ──────────────────────────────────────────────────────────────────
+
+// `replace` sets fields to the values that were about to be inserted
+type Conflict<C extends Columns> = {
+  on: (keyof C & string)[];
+  do: 'nothing' | Changes<C> & { replace?: (keyof InferForUpdate<C> & string)[] };
+};
+
+type InsertOptions<C extends Columns> = { conflict?: Conflict<C> };
 
 const CLIENT_GENERATORS: Partial<Record<Primitive, () => unknown>> = {
   UUID: () => Bun.randomUUIDv7(),
@@ -335,10 +380,10 @@ class InsertBuilder<T extends Table> {
     return new InsertBuilder(this.table, [...this.rows, ...wrap(rows)]);
   }
 
-  insert(db: IDatabase, options?: { returning?: true }): Promise<Infer<T['columns']>[]>;
-  insert(db: IDatabase, options: { returning: false }): Promise<undefined>;
-  insert<K extends keyof T['columns'] & string>(db: IDatabase, options: { returning: K[] }): Promise<Expand<Pick<Infer<T['columns']>, K>>[]>;
-  async insert(db: IDatabase, { returning = true }: { returning?: Returning } = {}) {
+  insert(db: IDatabase, options?: InsertOptions<T['columns']> & { returning?: true }): Promise<Infer<T['columns']>[]>;
+  insert(db: IDatabase, options: InsertOptions<T['columns']> & { returning: false }): Promise<undefined>;
+  insert<K extends keyof T['columns'] & string>(db: IDatabase, options: InsertOptions<T['columns']> & { returning: K[] }): Promise<Expand<Pick<Infer<T['columns']>, K>>[]>;
+  async insert(db: IDatabase, { returning = true, conflict }: { returning?: Returning, conflict?: { on: string[], do: 'nothing' | Row } } = {}) {
     if (this.rows.length === 0) return returning === false ? undefined : [];
 
     const cols = Object.values(this.table.columns);
@@ -358,7 +403,20 @@ class InsertBuilder<T extends Table> {
       .join(insertable, ', ', col => b.param(encode(db.dialect, col, row[col.key])))
       .push(')'));
 
+    if (conflict) this.renderConflict(b, conflict);
+
     return await runReturning(db, b, this.table, returning);
+  }
+
+  private renderConflict(b: SqlBuilder, conflict: { on: string[], do: 'nothing' | Row }) {
+    b.push(' ON CONFLICT');
+    if (conflict.on.length > 0) b.push(' (', conflict.on.map(key => quote(columnOf(this.table, key).name)).join(', '), ')');
+    if (conflict.do === 'nothing') return b.push(' DO NOTHING');
+
+    const assignments = parseChanges(this.table, conflict.do);
+    if (assignments.length === 0) throw new Error('Nothing to update on conflict: `set`, `inc` and `replace` are empty');
+
+    return renderAssignments(b.push(' DO UPDATE SET '), assignments, this.table.name);
   }
 }
 
@@ -374,11 +432,6 @@ type Query<T extends Table> = {
   orderBy: [Column, Direction][];
   limit?: number;
   offset?: number;
-};
-
-type Changes<C extends Columns> = {
-  set?: InferForUpdate<C>;
-  inc?: { [K in NumericKeys<C>]?: number };
 };
 
 class QueryBuilder<T extends Table> {
@@ -444,26 +497,12 @@ class QueryBuilder<T extends Table> {
     this.assertUnbounded('update');
 
     const { table, where } = this.query;
-    const cols = Object.values(table.columns);
-    const updatable = cols.filter(col => !col.generated && !col.primaryKey);
-    const numeric = updatable.filter(col => ['DECIMAL', 'FLOAT', 'INTEGER'].includes(col.type));
-
-    const set = std.parseOrThrow(std.strictObject(Object.fromEntries(updatable.map(col => [col.key, std.optional(col.schema)]))), changes.set ?? {});
-    const inc = std.parseOrThrow(std.strictObject(Object.fromEntries(numeric.map(col => [col.key, std.optional(std.number())]))), changes.inc ?? {});
-
-    const assignments = [
-      ...Object.entries(set).filter(([, value]) => value !== undefined).map(([key, value]) => ({ col: columnOf(table, key), value, inc: false })),
-      ...Object.entries(inc).filter(([, value]) => value !== undefined).map(([key, value]) => ({ col: columnOf(table, key), value, inc: true })),
-    ];
-
+    const assignments = parseChanges(table, changes);
     if (assignments.length === 0) throw new Error('Nothing to update: both `set` and `inc` are empty');
 
     const b = new SqlBuilder(db.dialect).push('UPDATE ', quote(table.name), ' SET ');
 
-    b.join(assignments, ', ', ({ col, value, inc }) => inc
-      ? b.push(ref(col), ' = ', ref(col), ' + ').param(value)
-      : b.push(ref(col), ' = ').param(encode(db.dialect, col, value)));
-
+    renderAssignments(b, assignments);
     renderWhere(b, where);
 
     return await runReturning(db, b, table, returning);

@@ -33,6 +33,7 @@ const users = table('users', t => ({
   id: t.uuid().generated().primaryKey(),
   name: t.string({ size: 48 }),
   email: tc.email(),
+  counter: t.integer().default(0),
   createdAt: t.datetime().default(() => new Date()),
 }));
 
@@ -84,41 +85,67 @@ const a5: undefined = await into(tasks)
   .values({ status: 'scheduled', type: 'Prune', payload: {}, scheduledAt: new Date() })
   .insert(db, { returning: false });
 
+// ─── on conflict ─────────────────────────────────────────────────────────────
+
+const b1: User[] = await into(users)
+  .values({ name: 'Jane Doe 1', email: 'jane.doe@example.com' })
+  .insert(db, {
+    conflict: { on: ['email'], do: 'nothing' },
+  });
+
+const b2: User[] = await into(users)
+  .values({ name: 'Jane Doe 2', email: 'jane.doe@example.com' })
+  .insert(db, {
+    conflict: {
+      on: ['email'],
+      do: { set: { name: 'Jane Doe 2' }, inc: { counter: 1 } },
+    },
+  });
+
+const b3: User[] = await into(users)
+  .values({ name: 'Jane Doe 3', email: 'jane.doe@example.com' })
+  .insert(db, {
+    conflict: {
+      on: ['email'],
+      do: { replace: ['name' /* EXCLUDED.name */], inc: { counter: 1 } },
+    },
+  });
+
 // ─── selects ─────────────────────────────────────────────────────────────────
 
-const b1: Task[] = await from(tasks)
+const c1: Task[] = await from(tasks)
   .where('scheduledAt', '<', new Date())
   .limit(1)
   .offset(0)
   .select(db);
 
-const b2: Task[] = await from(tasks)
+const c2: Task[] = await from(tasks)
   .where('scheduledAt', '<', new Date())
   .orderBy(['scheduledAt'])
   .select(db);
 
-const b3: Pick<Task, 'id' | 'type'>[] = await from(tasks)
+const c3: Pick<Task, 'id' | 'type'>[] = await from(tasks)
   .where('scheduledAt', '<', new Date())
   .select(db, ['id', 'type']);
 
-const b4: {}[] = await from(tasks)
+const c4: {}[] = await from(tasks)
   .where('scheduledAt', '<', new Date())
   .select(db, []);
 
-const b5: boolean = await from(tasks)
+const c5: boolean = await from(tasks)
   .where('status', '=', 'queued')
   .exists(db);
 
 // ─── updates ─────────────────────────────────────────────────────────────────
 
-const c1: Task[] = await from(tasks)
+const d1: Task[] = await from(tasks)
   .where('scheduledAt', '<', new Date())
   .update(db, {
     set: { status: 'running' },
     inc: { attempts: 1 },
   });
 
-const c2: Task[] = await from(tasks)
+const d2: Task[] = await from(tasks)
   .where('scheduledAt', '<', new Date())
   .update(db, {
     set: { status: 'running' },
@@ -126,7 +153,7 @@ const c2: Task[] = await from(tasks)
     returning: true,
   });
 
-const c3: Pick<Task, 'id'>[] = await from(tasks)
+const d3: Pick<Task, 'id'>[] = await from(tasks)
   .where('scheduledAt', '<', new Date())
   .update(db, {
     set: { status: 'running' },
@@ -134,7 +161,7 @@ const c3: Pick<Task, 'id'>[] = await from(tasks)
     returning: ['id'],
   });
 
-const c4: {}[] = await from(tasks)
+const d4: {}[] = await from(tasks)
   .where('scheduledAt', '<', new Date())
   .update(db, {
     set: { status: 'running' },
@@ -142,7 +169,7 @@ const c4: {}[] = await from(tasks)
     returning: [],
   });
 
-const c5: undefined = await from(tasks)
+const d5: undefined = await from(tasks)
   .where('scheduledAt', '<', new Date())
   .update(db, {
     set: { status: 'running' },
@@ -152,22 +179,22 @@ const c5: undefined = await from(tasks)
 
 // ─── deletes ─────────────────────────────────────────────────────────────────
 
-const d1: undefined = await from(tasks.as('t'))
+const e1: undefined = await from(tasks.as('t'))
   .where('status', '=', 'succeeded')
   .delete(db);
 
-const d2: undefined = await from(tasks.as('t'))
+const e2: undefined = await from(tasks.as('t'))
   .where('status', '=', 'succeeded')
   .delete(db, { returning: false });
 
-const d3: Task[] = await from(tasks.as('t'))
+const e3: Task[] = await from(tasks.as('t'))
   .where('status', '=', 'succeeded')
   .delete(db, { returning: true });
 
-const d4: Pick<Task, 'id'>[] = await from(tasks.as('t'))
+const e4: Pick<Task, 'id'>[] = await from(tasks.as('t'))
   .where('status', '=', 'succeeded')
   .delete(db, { returning: ['id'] });
 
-const d5: {}[] = await from(tasks.as('t'))
+const e5: {}[] = await from(tasks.as('t'))
   .where('status', '=', 'succeeded')
   .delete(db, { returning: [] });

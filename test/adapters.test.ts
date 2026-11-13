@@ -179,6 +179,58 @@ for (const adapter of adapters) {
       });
     });
 
+    describe('insert on conflict', () => {
+      const row = { day: '2026-11-13', amount: 1, ratio: 1, big: 1, doc: { a: [] }, body: 'a' };
+      const other = { ...row, big: 2, body: 'c' };
+
+      test('does nothing', async () => {
+        await into(things).values(row).insert(db);
+        const inserted = await into(things)
+          .values([{ ...row, body: 'b' }, other])
+          .insert(db, { conflict: { on: ['day', 'big'], do: 'nothing' }, returning: ['body'] });
+
+        expect(sqls.at(-1)).toContain(' ON CONFLICT ("day", "big") DO NOTHING RETURNING ');
+        expect(inserted).toEqual([{ body: 'c' }]);
+        expect(await from(things).orderBy(['big']).select(db, ['body'])).toEqual([{ body: 'a' }, { body: 'c' }]);
+      });
+
+      test('does nothing on any conflict', async () => {
+        await into(things).values(row).insert(db);
+
+        expect(await into(things).values({ ...row, big: 3 }).insert(db, { conflict: { on: [], do: 'nothing' }, returning: [] })).toEqual([]);
+        expect(sqls.at(-1)).toContain(' ON CONFLICT DO NOTHING RETURNING 1');
+      });
+
+      test('sets and increments', async () => {
+        await into(things).values(row).insert(db);
+        const upserted = await into(things)
+          .values([{ ...row, body: 'b' }, other])
+          .insert(db, { conflict: { on: ['day', 'big'], do: { set: { flag: true }, inc: { amount: 0.5 } } } });
+
+        expect(sqls.at(-1)).toContain(` DO UPDATE SET "flag" = ${db.dialect.placeholder(19)}, "amount" = "things"."amount" + ${db.dialect.placeholder(20)} RETURNING `);
+        expect(upserted.map(thing => [thing.big, thing.body, thing.flag, thing.amount]).sort()).toEqual([[1, 'a', true, 1.5], [2, 'c', false, 1]]);
+      });
+
+      test('replaces with the values being inserted', async () => {
+        await into(things).values(row).insert(db);
+        const [upserted] = await into(things)
+          .values({ ...row, ratio: 2, body: 'b' })
+          .insert(db, { conflict: { on: ['day', 'big'], do: { replace: ['ratio', 'body'], inc: { amount: 1 } } } });
+
+        expect(sqls.at(-1)).toContain(' DO UPDATE SET "amount" = "things"."amount" + ');
+        expect(sqls.at(-1)).toContain(', "ratio" = EXCLUDED."ratio", "body" = EXCLUDED."body" RETURNING ');
+        expect([upserted!.ratio, upserted!.body, upserted!.amount]).toEqual([2, 'b', 2]);
+      });
+
+      test('rejects empty and invalid changes', async () => {
+        const upsert = (changes: any) => into(things).values(row).insert(db, { conflict: { on: ['day', 'big'], do: changes } });
+
+        await expect(upsert({})).rejects.toThrow('Nothing to update on conflict');
+        await expect(upsert({ replace: ['seq'] })).rejects.toThrow('Cannot replace "seq"');
+        await expect(upsert({ set: { flag: 'yes' } })).rejects.toBeInstanceOf(ValidationError);
+      });
+    });
+
     describe('select', () => {
       test('filters and orders', async () => {
         const [first, second] = await insertTasks();

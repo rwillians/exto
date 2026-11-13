@@ -62,6 +62,21 @@ export const checks = async (db: IDatabase) => {
   // @ts-expect-error returning uses field keys, not column names
   into(tasks).values(row).insert(db, { returning: ['scheduled_at'] });
 
+  const upserted = await into(tasks).values(row).insert(db, { conflict: { on: ['id'], do: { set: { type: 'b' }, inc: { attempts: 1 }, replace: ['status'] } } });
+  assert<Equals<typeof upserted, typeof tasks.infer[]>>();
+
+  const upsertedIds = await into(tasks).values(row).insert(db, { conflict: { on: ['id'], do: 'nothing' }, returning: ['id'] });
+  assert<Equals<typeof upsertedIds, { id: string }[]>>();
+
+  // @ts-expect-error conflict targets use field keys, not column names
+  into(tasks).values(row).insert(db, { conflict: { on: ['scheduled_at'], do: 'nothing' } });
+
+  // @ts-expect-error primary keys can't be replaced
+  into(tasks).values(row).insert(db, { conflict: { on: ['id'], do: { replace: ['id'] } } });
+
+  // @ts-expect-error only numeric columns can be incremented
+  into(tasks).values(row).insert(db, { conflict: { on: ['id'], do: { inc: { type: 1 } } } });
+
   const updated = await from(tasks).update(db, { set: { status: 'running' } });
   assert<Equals<typeof updated, typeof tasks.infer[]>>();
 
