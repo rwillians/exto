@@ -23,6 +23,7 @@ export const things = table('things', t => ({
   doc: t.json(z.object({ a: z.array(z.number()) })),
   body: t.text().unique(),
   list: t.json(z.array(z.union([z.string(), z.number()]))).default(() => ['x', 1]),
+  label: t.citext().nullable(),
 }));
 
 export const migrate = defineMigrations({

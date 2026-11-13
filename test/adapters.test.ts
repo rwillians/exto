@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
-import { ValidationError, expr, from, into, type IDatabase } from '../src';
+import { ValidationError, create, exec, expr, from, into, type IDatabase } from '../src';
 import * as pg from '../src/bun-postgres';
 import * as sqlite from '../src/bun-sqlite';
 import { migrate, tasks, things } from './fixtures';
@@ -28,6 +28,7 @@ const adapters: { name: string, skip: boolean, fresh: (logger: Logger) => Promis
     fresh: async (logger) => {
       pgdb ??= pg.connect(PG_URL!, { loggers: [logger] });
       await pgdb.execute('DROP TABLE IF EXISTS tasks, things, schema_migrations', []);
+      await pgdb.execute('CREATE EXTENSION IF NOT EXISTS citext', []);
       return pgdb;
     },
   },
@@ -54,6 +55,16 @@ for (const adapter of adapters) {
     });
 
     describe('migrations', () => {
+      test('can run raw statements', async () => {
+        await insertTasks();
+
+        expect(await exec(db, 'CREATE INDEX "tasks_type_index" ON "tasks" ("type")')).toBeUndefined();
+        expect(sqls.at(-1)).toBe('CREATE INDEX "tasks_type_index" ON "tasks" ("type")');
+
+        await exec(db, `UPDATE "tasks" SET "type" = ${db.dialect.placeholder(1)}`, ['Raw']);
+        expect(await from(tasks).where('type', '=', 'Raw').count(db)).toBe(3);
+      });
+
       test('are applied once', async () => {
         await migrate(db);
         expect(await from(tasks).select(db)).toEqual([]);
@@ -162,8 +173,17 @@ for (const adapter of adapters) {
         expect(await into(things).values({ ...row, doc: { a: [1] } }).insert(db)).toHaveLength(1);
       });
 
+      test('compares citext case-insensitively', async () => {
+        const row = { day: '2026-11-13', amount: 1, ratio: 1, big: 1, doc: { a: [] }, body: 'a', label: 'Jane@Example.com' };
+        await into(things).values(row).insert(db);
+        await create.uniqueIndex(things, ['label']).onto(db);
+
+        expect(await from(things).where('label', '=', 'jane@example.com').select(db, ['label'])).toEqual([{ label: 'Jane@Example.com' }]);
+        await expect(into(things).values({ ...row, big: 2, body: 'b', label: 'JANE@example.com' }).insert(db)).rejects.toThrow();
+      });
+
       test('round-trips every primitive', async () => {
-        const row = { blob: new Uint8Array([1, 2, 255]), day: '2026-11-12', amount: 12.5, ratio: -0.25, big: 2 ** 40, doc: { a: [1, 2] }, body: 'hi' };
+        const row = { blob: new Uint8Array([1, 2, 255]), day: '2026-11-12', amount: 12.5, ratio: -0.25, big: 2 ** 40, doc: { a: [1, 2] }, body: 'hi', label: 'Hi There' };
         const [thing] = await into(things).values(row).insert(db);
 
         expect(thing).toEqual({ seq: 1, flag: false, list: ['x', 1], ...row, blob: expect.any(Uint8Array) });
@@ -215,7 +235,9 @@ for (const adapter of adapters) {
           .values([{ ...row, body: 'b' }, other])
           .insert(db, { conflict: { on: ['day', 'big'], do: { set: { flag: true }, inc: { amount: 0.5 } } } });
 
-        expect(sqls.at(-1)).toContain(` DO UPDATE SET "flag" = ${db.dialect.placeholder(19)}, "amount" = "things"."amount" + ${db.dialect.placeholder(20)} RETURNING `);
+        // two rows' worth of params come before the ones in DO UPDATE
+        const n = 2 * Object.values(things.columns).filter(col => !('generated' in col)).length;
+        expect(sqls.at(-1)).toContain(` DO UPDATE SET "flag" = ${db.dialect.placeholder(n + 1)}, "amount" = "things"."amount" + ${db.dialect.placeholder(n + 2)} RETURNING `);
         expect(upserted.map(thing => [thing.big, thing.body, thing.flag, thing.amount]).sort()).toEqual([[1, 'a', true, 1.5], [2, 'c', false, 1]]);
       });
 

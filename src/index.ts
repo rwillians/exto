@@ -7,6 +7,7 @@ import { type CamelCase, type Expand, camelCase, snakeCase, wrap } from './utils
 type Primitive =
   'BINARY'
   | 'BOOLEAN'
+  | 'CITEXT'
   | 'DATE'
   | 'DATETIME'
   | 'DECIMAL'
@@ -72,6 +73,8 @@ const column = <P extends ColumnProps>(props: P) => new ColumnBuilder(props);
 const types = {
   binary: () => column({ type: 'BINARY', schema: std.instanceOf(Uint8Array) }),
   boolean: () => column({ type: 'BOOLEAN', schema: std.boolean() }),
+  // case-insensitive text; postgres needs `CREATE EXTENSION citext` for it
+  citext: () => column({ type: 'CITEXT', schema: std.string() }),
   date: () => column({ type: 'DATE', schema: std.isoDate() }),
   datetime: () => column({ type: 'DATETIME', schema: std.date() }),
   decimal: () => column({ type: 'DECIMAL', schema: std.number() }),
@@ -248,6 +251,11 @@ const run = async (db: IDatabase, { sql, params }: Statement) => {
     db.loggers.forEach(logger => logger.error(sql, params, error));
     throw error;
   }
+};
+
+// runs a raw statement, e.g. `CREATE EXTENSION` in a migration
+const exec = async (db: IDatabase, sql: string, params: unknown[] = []) => {
+  await run(db, { sql, params });
 };
 
 // `true` returns every field, a list returns those fields, `false` returns
@@ -665,6 +673,7 @@ export {
   create,
   defineMigrations,
   defineTable as table,
+  exec,
   expr,
   from,
   into,

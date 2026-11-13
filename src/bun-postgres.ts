@@ -4,6 +4,7 @@ import type { Codec, Column, Dialect, IDatabase, ILogger, Primitive, Row } from 
 const TYPES: Record<Primitive, (col: Column) => string> = {
   BINARY:   () => 'BYTEA',
   BOOLEAN:  () => 'BOOLEAN',
+  CITEXT:   () => 'CITEXT',
   DATE:     () => 'DATE',
   DATETIME: () => 'TIMESTAMPTZ',
   DECIMAL:  () => 'NUMERIC',
@@ -30,6 +31,7 @@ const dialect: Dialect = {
   codecs: {
     BINARY:   identity,
     BOOLEAN:  identity,
+    CITEXT:   identity,
     DATE:     { encode: (value: string) => value, decode: (value: Date | string) => value instanceof Date ? value.toISOString().slice(0, 10) : value },
     DATETIME: identity,
     DECIMAL:  { encode: (value: number) => value, decode: (value: string) => Number(value) },
