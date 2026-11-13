@@ -37,6 +37,9 @@ export const checks = async (db: IDatabase) => {
   const pickedNone = await from(tasks).select(db, []);
   assert<Equals<typeof pickedNone, {}[]>>();
 
+  const exists = await from(tasks).where('status', '=', 'queued').exists(db);
+  assert<Equals<typeof exists, boolean>>();
+
   from(tasks).where('parentId', 'is', null).where('status', 'in', ['queued', 'running']);
 
   const row = { status: 'queued', type: 'a', payload: {}, scheduledAt: new Date() } as const;

@@ -84,6 +84,10 @@ const b4: {}[] = await from(tasks)
   .where('scheduledAt', '<', new Date())
   .select(db, []);
 
+const b5: boolean = await from(tasks)
+  .where('status', '=', 'queued')
+  .exists(db);
+
 // ─── updates ─────────────────────────────────────────────────────────────────
 
 const c1: Task[] = await from(tasks)

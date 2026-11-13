@@ -431,6 +431,12 @@ class QueryBuilder<T extends Table> {
     return rows.map(decoder(db.dialect, cols)) as Expand<Pick<Infer<T['columns']>, K>>[];
   }
 
+  async exists(db: IDatabase) {
+    // keeps a `limit(0)`, which can never match
+    const rows = await this.limit(Math.min(this.query.limit ?? 1, 1)).select(db, []);
+    return rows.length > 0;
+  }
+
   update(db: IDatabase, changes: Changes<T['columns']> & { returning: false }): Promise<undefined>;
   update<K extends keyof T['columns'] & string>(db: IDatabase, changes: Changes<T['columns']> & { returning: K[] }): Promise<Expand<Pick<Infer<T['columns']>, K>>[]>;
   update(db: IDatabase, changes: Changes<T['columns']> & { returning?: true }): Promise<Infer<T['columns']>[]>;

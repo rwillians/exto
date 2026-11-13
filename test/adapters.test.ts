@@ -200,6 +200,17 @@ for (const adapter of adapters) {
         expect(sqls.at(-1)).toStartWith('SELECT 1 FROM "tasks" AS "t"');
       });
 
+      test('checks whether any row matches', async () => {
+        await insertTasks();
+
+        expect(await from(tasks).where('status', '=', 'queued').exists(db)).toBe(true);
+        expect(sqls.at(-1)).toBe(`SELECT 1 FROM "tasks" AS "tasks" WHERE "tasks"."status" = ${db.dialect.placeholder(1)} LIMIT ${db.dialect.placeholder(2)}`);
+        expect(await from(tasks).where('status', '=', 'failed').exists(db)).toBe(false);
+        expect(await from(tasks).offset(2).exists(db)).toBe(true);
+        expect(await from(tasks).offset(3).exists(db)).toBe(false);
+        expect(await from(tasks).limit(0).exists(db)).toBe(false);
+      });
+
       test('supports in, not in and is null', async () => {
         await insertTasks();
 
