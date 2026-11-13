@@ -144,23 +144,25 @@ const c4: {}[] = await from(tasks)
   .where('scheduledAt', '<', new Date())
   .select(db, []);
 
-const c5: boolean = await from(tasks)
+// ─── exists ──────────────────────────────────────────────────────────────────
+
+const d1: boolean = await from(tasks)
   .where('status', '=', 'queued')
   .exists(db);
 
-const c6: boolean = await from(tasks)
+const d2: boolean = await from(tasks)
   .where('status', '=', 'scheduled')
   .where('scheduledAt', '<', new Date()) // all `.where` params become ANDed together
   .exists(db);
 
-const c7: boolean = await from(tasks)
+const d3: boolean = await from(tasks)
   .where(expr.and([
     expr('status', '=', 'scheduled'),
     expr('scheduledAt', '<', new Date())
   ])) // different syntax but same thing as c6
   .exists(db);
 
-const c8: boolean = await from(tasks)
+const d4: boolean = await from(tasks)
   .where(expr.or([
     expr.and([
       expr('status', '=', 'scheduled'),
@@ -172,14 +174,14 @@ const c8: boolean = await from(tasks)
 
 // ─── updates ─────────────────────────────────────────────────────────────────
 
-const d1: Task[] = await from(tasks)
+const e1: Task[] = await from(tasks)
   .where('scheduledAt', '<', new Date())
   .update(db, {
     set: { status: 'running' },
     inc: { attempts: 1 },
   });
 
-const d2: Task[] = await from(tasks)
+const e2: Task[] = await from(tasks)
   .where('scheduledAt', '<', new Date())
   .update(db, {
     set: { status: 'running' },
@@ -187,7 +189,7 @@ const d2: Task[] = await from(tasks)
     returning: true,
   });
 
-const d3: Pick<Task, 'id'>[] = await from(tasks)
+const e3: Pick<Task, 'id'>[] = await from(tasks)
   .where('scheduledAt', '<', new Date())
   .update(db, {
     set: { status: 'running' },
@@ -195,7 +197,7 @@ const d3: Pick<Task, 'id'>[] = await from(tasks)
     returning: ['id'],
   });
 
-const d4: {}[] = await from(tasks)
+const e4: {}[] = await from(tasks)
   .where('scheduledAt', '<', new Date())
   .update(db, {
     set: { status: 'running' },
@@ -203,7 +205,7 @@ const d4: {}[] = await from(tasks)
     returning: [],
   });
 
-const d5: undefined = await from(tasks)
+const e5: undefined = await from(tasks)
   .where('scheduledAt', '<', new Date())
   .update(db, {
     set: { status: 'running' },
@@ -213,22 +215,28 @@ const d5: undefined = await from(tasks)
 
 // ─── deletes ─────────────────────────────────────────────────────────────────
 
-const e1: undefined = await from(tasks)
+const f1: undefined = await from(tasks)
   .where('status', '=', 'succeeded')
   .delete(db);
 
-const e2: undefined = await from(tasks)
+const f2: undefined = await from(tasks)
   .where('status', '=', 'succeeded')
   .delete(db, { returning: false });
 
-const e3: Task[] = await from(tasks)
+const f3: Task[] = await from(tasks)
   .where('status', '=', 'succeeded')
   .delete(db, { returning: true });
 
-const e4: Pick<Task, 'id'>[] = await from(tasks)
+const f4: Pick<Task, 'id'>[] = await from(tasks)
   .where('status', '=', 'succeeded')
   .delete(db, { returning: ['id'] });
 
-const e5: {}[] = await from(tasks)
+const f5: {}[] = await from(tasks)
   .where('status', '=', 'succeeded')
   .delete(db, { returning: [] });
+
+// ─── count ───────────────────────────────────────────────────────────────────
+
+const g1: number = await from(tasks)
+  .where('scheduledAt', '<', new Date())
+  .count(db);

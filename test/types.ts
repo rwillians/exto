@@ -40,6 +40,9 @@ export const checks = async (db: IDatabase) => {
   const exists = await from(tasks).where('status', '=', 'queued').exists(db);
   assert<Equals<typeof exists, boolean>>();
 
+  const count = await from(tasks).where('status', '=', 'queued').count(db);
+  assert<Equals<typeof count, number>>();
+
   from(tasks).where('parentId', 'is', null).where('status', 'in', ['queued', 'running']);
 
   const row = { status: 'queued', type: 'a', payload: {}, scheduledAt: new Date() } as const;

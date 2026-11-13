@@ -495,28 +495,12 @@ class QueryBuilder<T extends Table> {
   }
 
   async select<K extends keyof T['columns'] & string = keyof T['columns'] & string>(db: IDatabase, keys?: K[]) {
-    const { table, where, orderBy, limit, offset } = this.query;
+    const { table } = this.query;
     const cols = keys
       ? keys.map(key => columnOf(table, key))
       : Object.values(table.columns);
 
-    const b = new SqlBuilder(db.dialect).push('SELECT ');
-
-    // an empty select list isn't valid SQL, but each matching row still needs
-    // an (empty) object
-    if (cols.length === 0) b.push('1');
-    else b.join(cols, ', ', col => b.push(ref(col, table.alias), ' AS ', quote(col.key)));
-
-    b.push(' FROM ', quote(table.name), ' AS ', quote(table.alias));
-
-    renderWhere(b, where, table.alias);
-    if (orderBy.length > 0) b.push(' ORDER BY ').join(orderBy, ', ', ([col, dir]) => b.push(ref(col, table.alias), ' ', dir));
-    // sqlite requires LIMIT whenever there's an OFFSET, and there's no "no
-    // limit" value both sqlite and postgres accept other than a huge number
-    if (limit !== undefined || offset !== undefined) b.push(' LIMIT ').param(limit ?? Number.MAX_SAFE_INTEGER);
-    if (offset !== undefined) b.push(' OFFSET ').param(offset);
-
-    const rows = await run(db, b.build());
+    const rows = await run(db, this.renderSelect(new SqlBuilder(db.dialect), cols).build());
     return rows.map(decoder(db.dialect, cols)) as Expand<Pick<Infer<T['columns']>, K>>[];
   }
 
@@ -524,6 +508,15 @@ class QueryBuilder<T extends Table> {
     // keeps a `limit(0)`, which can never match
     const rows = await this.limit(Math.min(this.query.limit ?? 1, 1)).select(db, []);
     return rows.length > 0;
+  }
+
+  // counts the rows `select` would return: as a subquery, limit and offset
+  // still apply, and postgres doesn't take ORDER BY next to a bare COUNT(*)
+  async count(db: IDatabase) {
+    const b = new SqlBuilder(db.dialect).push('SELECT COUNT(*) AS "count" FROM (');
+    const [row] = await run(db, this.renderSelect(b, []).push(') AS "q"').build());
+    // postgres returns COUNT(*) as a bigint
+    return Number(row!['count']);
   }
 
   update(db: IDatabase, changes: Changes<T['columns']> & { returning: false }): Promise<undefined>;
@@ -556,6 +549,28 @@ class QueryBuilder<T extends Table> {
     renderWhere(b, where);
 
     return await runReturning(db, b, table, returning);
+  }
+
+  private renderSelect(b: SqlBuilder, cols: Column[]) {
+    const { table, where, orderBy, limit, offset } = this.query;
+
+    b.push('SELECT ');
+
+    // an empty select list isn't valid SQL, but each matching row still needs
+    // an (empty) object
+    if (cols.length === 0) b.push('1');
+    else b.join(cols, ', ', col => b.push(ref(col, table.alias), ' AS ', quote(col.key)));
+
+    b.push(' FROM ', quote(table.name), ' AS ', quote(table.alias));
+
+    renderWhere(b, where, table.alias);
+    if (orderBy.length > 0) b.push(' ORDER BY ').join(orderBy, ', ', ([col, dir]) => b.push(ref(col, table.alias), ' ', dir));
+    // sqlite requires LIMIT whenever there's an OFFSET, and there's no "no
+    // limit" value both sqlite and postgres accept other than a huge number
+    if (limit !== undefined || offset !== undefined) b.push(' LIMIT ').param(limit ?? Number.MAX_SAFE_INTEGER);
+    if (offset !== undefined) b.push(' OFFSET ').param(offset);
+
+    return b;
   }
 
   // UPDATE/DELETE ... ORDER BY/LIMIT isn't portable, so refuse it rather than

@@ -311,6 +311,19 @@ for (const adapter of adapters) {
         expect(nested.map(task => task.id).sort()).toEqual([first!.id, second!.id].sort());
       });
 
+      test('counts the rows select would return', async () => {
+        expect(await from(tasks).count(db)).toBe(0);
+
+        await insertTasks();
+
+        expect(await from(tasks).count(db)).toBe(3);
+        expect(sqls.at(-1)).toBe('SELECT COUNT(*) AS "count" FROM (SELECT 1 FROM "tasks" AS "tasks") AS "q"');
+        expect(await from(tasks).where('type', '=', 'Prune').count(db)).toBe(2);
+        expect(await from(tasks).where(expr.or([expr('status', '=', 'queued'), expr('attempts', '>', 0)])).count(db)).toBe(1);
+        expect(await from(tasks).orderBy(['scheduledAt']).limit(2).count(db)).toBe(2);
+        expect(await from(tasks).orderBy(['scheduledAt']).offset(2).count(db)).toBe(1);
+      });
+
       test('treats empty groups like empty in lists', async () => {
         await insertTasks();
 
