@@ -194,6 +194,14 @@ for (const adapter of adapters) {
         expect(await from(things).orderBy(['big']).select(db, ['body'])).toEqual([{ body: 'a' }, { body: 'c' }]);
       });
 
+      test('throws', async () => {
+        await into(things).values(row).insert(db);
+
+        await expect(into(things).values({ ...row, body: 'b' }).insert(db, { conflict: { on: ['day', 'big'], do: 'throw' } })).rejects.toThrow();
+        expect(sqls.at(-1)).not.toContain('ON CONFLICT');
+        expect(await from(things).select(db, ['body'])).toEqual([{ body: 'a' }]);
+      });
+
       test('does nothing on any conflict', async () => {
         await into(things).values(row).insert(db);
 

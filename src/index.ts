@@ -345,10 +345,11 @@ const renderAssignments = (b: SqlBuilder, assignments: Assignment[], qualifier?:
 
 // ─── insert ──────────────────────────────────────────────────────────────────
 
-// `replace` sets fields to the values that were about to be inserted
+// `throw` is the same as no conflict handling at all, and `replace` sets
+// fields to the values that were about to be inserted
 type Conflict<C extends Columns> = {
   on: (keyof C & string)[];
-  do: 'nothing' | Changes<C> & { replace?: (keyof InferForUpdate<C> & string)[] };
+  do: 'nothing' | 'throw' | Changes<C> & { replace?: (keyof InferForUpdate<C> & string)[] };
 };
 
 type InsertOptions<C extends Columns> = { conflict?: Conflict<C> };
@@ -383,7 +384,7 @@ class InsertBuilder<T extends Table> {
   insert(db: IDatabase, options?: InsertOptions<T['columns']> & { returning?: true }): Promise<Infer<T['columns']>[]>;
   insert(db: IDatabase, options: InsertOptions<T['columns']> & { returning: false }): Promise<undefined>;
   insert<K extends keyof T['columns'] & string>(db: IDatabase, options: InsertOptions<T['columns']> & { returning: K[] }): Promise<Expand<Pick<Infer<T['columns']>, K>>[]>;
-  async insert(db: IDatabase, { returning = true, conflict }: { returning?: Returning, conflict?: { on: string[], do: 'nothing' | Row } } = {}) {
+  async insert(db: IDatabase, { returning = true, conflict }: { returning?: Returning, conflict?: { on: string[], do: 'nothing' | 'throw' | Row } } = {}) {
     if (this.rows.length === 0) return returning === false ? undefined : [];
 
     const cols = Object.values(this.table.columns);
@@ -408,7 +409,9 @@ class InsertBuilder<T extends Table> {
     return await runReturning(db, b, this.table, returning);
   }
 
-  private renderConflict(b: SqlBuilder, conflict: { on: string[], do: 'nothing' | Row }) {
+  private renderConflict(b: SqlBuilder, conflict: { on: string[], do: 'nothing' | 'throw' | Row }) {
+    if (conflict.do === 'throw') return b;
+
     b.push(' ON CONFLICT');
     if (conflict.on.length > 0) b.push(' (', conflict.on.map(key => quote(columnOf(this.table, key).name)).join(', '), ')');
     if (conflict.do === 'nothing') return b.push(' DO NOTHING');

@@ -111,6 +111,18 @@ const b3: User[] = await into(users)
     },
   });
 
+const b4 = await into(users)
+  .values({ name: 'Jane Doe 4', email: 'jane.doe@example.com' })
+  .insert(db, { conflict: { on: ['email'], do: 'throw' } })
+  .catch(err => err); // will definitely throw
+
+const b5 = await into(users)
+  .values({ name: 'Jane Doe 5', email: 'jane.doe@example.com' })
+  .insert(db)
+  .catch(err => err); // will definitely throw
+
+// for pratical reasons, b5 is exactly the same as b4
+
 // ─── selects ─────────────────────────────────────────────────────────────────
 
 const c1: Task[] = await from(tasks)
