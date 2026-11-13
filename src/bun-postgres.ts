@@ -1,5 +1,5 @@
 import { SQL, type TransactionSQL } from 'bun';
-import type { Codec, Column, Dialect, IDatabase, ILogger, Primitive, Row } from './index';
+import type { Column, Dialect, IDatabase, ILogger, Primitive, Row } from './index';
 import { raise } from './utils';
 
 const TYPES: Record<Primitive, (col: Column) => string> = {
@@ -22,12 +22,13 @@ const TYPES: Record<Primitive, (col: Column) => string> = {
   UUID:     () => 'UUID',
 };
 
-const identity: Codec = {
-  encode: (value) => value,
-  decode: (value) => value,
-};
+const identity = <T>() => ({
+  encode: (value: T) => value,
+  decode: (value: T) => value,
+});
 
 const dialect: Dialect = {
+  name: 'postgres',
   placeholder: (index) => `$${index}`,
   type: (col) => TYPES[col.type](col),
   generated: (col) => col.type === 'SEQUENCE'
@@ -35,19 +36,19 @@ const dialect: Dialect = {
     : undefined,
   codecs: {
     BIGINT:   { encode: (value: bigint) => value, decode: (value: string | bigint | number) => BigInt(value) },
-    BINARY:   identity,
-    BOOLEAN:  identity,
-    CITEXT:   identity,
+    BINARY:   identity<Uint8Array>(),
+    BOOLEAN:  identity<boolean>(),
+    CITEXT:   identity<string>(),
     DATE:     { encode: (value: string) => value, decode: (value: Date | string) => value instanceof Date ? value.toISOString().slice(0, 10) : value },
-    DATETIME: identity,
+    DATETIME: identity<Date>(),
     DECIMAL:  { encode: (value: number) => value, decode: (value: string) => Number(value) },
-    FLOAT:    identity,
+    FLOAT:    identity<number>(),
     INTEGER:  { encode: (value: number) => value, decode: (value: string | bigint | number) => Number(value) },
-    JSON:     identity,
+    JSON:     identity<any>(),
     SEQUENCE: { encode: (value: number) => value, decode: (value: string | bigint | number) => Number(value) },
-    STRING:   identity,
-    TEXT:     identity,
-    UUID:     identity,
+    STRING:   identity<string>(),
+    TEXT:     identity<string>(),
+    UUID:     identity<string>(),
   },
 };
 

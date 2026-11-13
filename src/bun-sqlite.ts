@@ -18,19 +18,20 @@ const TYPES: Record<Primitive, string> = {
   UUID:     'TEXT',
 };
 
-const identity: Codec = {
-  encode: (value) => value,
-  decode: (value) => value,
-};
+const identity = <T>() => ({
+  encode: (value: T) => value,
+  decode: (value: T) => value,
+});
 
 // integers are read as bigints (see `execute`), so those that aren't BIGINT
 // columns go back to being numbers
 const numeric: Codec = {
-  encode: (value) => value,
+  encode: (value: number) => value,
   decode: (value: number | bigint) => Number(value),
 };
 
 const dialect: Dialect = {
+  name: 'sqlite',
   placeholder: () => '?',
   type: (col) => TYPES[col.type],
   generated: (col) => {
@@ -40,19 +41,19 @@ const dialect: Dialect = {
   },
   codecs: {
     BIGINT:   { encode: (value: bigint) => value, decode: (value: number | bigint) => BigInt(value) },
-    BINARY:   identity,
+    BINARY:   identity<Uint8Array>(),
     BOOLEAN:  { encode: (value: boolean) => (value ? 1 : 0), decode: (value: number | bigint) => Number(value) === 1 },
-    CITEXT:   identity,
-    DATE:     identity,
+    CITEXT:   identity<string>(),
+    DATE:     identity<string>(),
     DATETIME: { encode: (value: Date) => value.getTime(), decode: (value: number | bigint) => new Date(Number(value)) },
     DECIMAL:  numeric,
     FLOAT:    numeric,
     INTEGER:  numeric,
     JSON:     { encode: (value) => JSON.stringify(value), decode: (value: string) => JSON.parse(value) },
     SEQUENCE: numeric,
-    STRING:   identity,
-    TEXT:     identity,
-    UUID:     identity,
+    STRING:   identity<string>(),
+    TEXT:     identity<string>(),
+    UUID:     identity<string>(),
   },
 };
 

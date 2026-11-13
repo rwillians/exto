@@ -185,7 +185,7 @@ for (const adapter of adapters) {
       test('gives decimals a precision and scale on postgres', () => {
         const ddl = sqls.find(sql => sql.startsWith('CREATE TABLE "things"'));
 
-        expect(ddl).toContain(adapter.name === 'bun-postgres' ? '"price" NUMERIC(10, 2)' : '"price" NUMERIC)');
+        expect(ddl).toContain(db.dialect.name === 'postgres' ? '"price" NUMERIC(10, 2)' : '"price" NUMERIC)');
         expect(ddl).toContain('"amount" NUMERIC NOT NULL');
       });
 

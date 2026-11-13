@@ -176,7 +176,11 @@ type Codec = {
  * value, or `undefined` when the database can't natively, in which case the
  * value is generated client-side on insert.
  */
+// the built-in adapters' names; other adapters may name themselves anything
+type DialectName = 'postgres' | 'sqlite' | (string & {});
+
 interface Dialect {
+  name: DialectName;
   placeholder(index: number): string;
   type(column: Column): string;
   generated(column: Column): string | undefined;
@@ -667,6 +671,7 @@ export {
   type Column,
   type ColumnProps,
   type Dialect,
+  type DialectName,
   type Expr,
   type IDatabase,
   type ILogger,
