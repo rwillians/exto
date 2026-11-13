@@ -193,6 +193,13 @@ for (const adapter of adapters) {
         expect(Object.keys(rows[0]!)).toEqual(['id', 'type']);
       });
 
+      test('returns an empty object per row given no columns', async () => {
+        await insertTasks();
+
+        expect(await from(tasks.as('t')).where('type', '=', 'Prune').select(db, [])).toEqual([{}, {}]);
+        expect(sqls.at(-1)).toStartWith('SELECT 1 FROM "tasks" AS "t"');
+      });
+
       test('supports in, not in and is null', async () => {
         await insertTasks();
 

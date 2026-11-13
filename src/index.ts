@@ -413,8 +413,12 @@ class QueryBuilder<T extends Table> {
 
     const b = new SqlBuilder(db.dialect).push('SELECT ');
 
-    b.join(cols, ', ', col => b.push(ref(col, table.alias), ' AS ', quote(col.key)))
-      .push(' FROM ', quote(table.name), ' AS ', quote(table.alias));
+    // an empty select list isn't valid SQL, but each matching row still needs
+    // an (empty) object
+    if (cols.length === 0) b.push('1');
+    else b.join(cols, ', ', col => b.push(ref(col, table.alias), ' AS ', quote(col.key)));
+
+    b.push(' FROM ', quote(table.name), ' AS ', quote(table.alias));
 
     renderWhere(b, where, table.alias);
     if (orderBy.length > 0) b.push(' ORDER BY ').join(orderBy, ', ', ([col, dir]) => b.push(ref(col, table.alias), ' ', dir));

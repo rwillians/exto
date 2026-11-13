@@ -65,20 +65,24 @@ const a5: undefined = await into(tasks)
 
 // ─── selects ─────────────────────────────────────────────────────────────────
 
-await from(tasks)
+const b1: Task[] = await from(tasks)
   .where('scheduledAt', '<', new Date())
   .limit(1)
   .offset(0)
   .select(db);
 
-await from(tasks)
+const b2: Task[] = await from(tasks)
   .where('scheduledAt', '<', new Date())
   .orderBy(['scheduledAt'])
   .select(db);
 
-await from(tasks)
+const b3: Pick<Task, 'id' | 'type'>[] = await from(tasks)
   .where('scheduledAt', '<', new Date())
   .select(db, ['id', 'type']);
+
+const b4: {}[] = await from(tasks)
+  .where('scheduledAt', '<', new Date())
+  .select(db, []);
 
 // ─── updates ─────────────────────────────────────────────────────────────────
 
