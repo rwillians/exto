@@ -1,7 +1,7 @@
 {
   "name": "@rwillians/exto",
   "description": "A zero-dependencies teeny tiny ORM for SQL databases.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": "Rafael Willians <me@rwillians.com>",
   "license": "MIT",
   "publishConfig": {
@@ -12,17 +12,17 @@
     "url": "git://github.com/rwillians/exto.git"
   },
   "keywords": [
-    "query",
     "builder",
-    "query builder",
+    "bun",
+    "orm",
     "postgres",
+    "query builder",
+    "query",
     "sql",
     "sqlite",
-    "typescript",
     "type-safe",
     "type-safety",
-    "orm",
-    "bun"
+    "typescript"
   ],
   "type": "module",
   "module": "dist/esm/index.js",
