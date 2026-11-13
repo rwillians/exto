@@ -32,6 +32,9 @@ const jane = await from(users)
 - Inserted and updated values are validated before any SQL runs.
 - No singletons: you always pass the database explicitly.
 
+> [!NOTE]
+> exto covers single-table queries for now. See [what's not supported yet](#not-supported-yet).
+
 
 ## Install
 
@@ -313,6 +316,29 @@ try {
     error.issues;  // [{ message, path: [0, 'name'] }, ...]
   }
 }
+```
+
+
+## Not supported yet
+
+exto is young, and it focuses on queries against a single table. Every query
+reads from one table only, so joins aren't possible yet. Neither is nesting one
+query inside another, whether as a subquery (`WHERE id IN (SELECT ...)`) or as
+a common table expression (`WITH ... SELECT`).
+
+Selects return columns as they're stored: `.select()` takes column keys only,
+so computed values such as `attempts * 2` can't be selected. Aggregation stops
+at `.count()`, too. There's no `.groupBy()` to group rows, and no `.having()`
+to filter those groups.
+
+All of these are planned. Until then, `db.execute()` runs raw SQL and returns
+the rows as the driver gives them, without exto's decoding:
+
+```ts
+const totals = await db.execute(
+  'SELECT status, COUNT(*) AS total FROM tasks GROUP BY status',
+  [],
+);
 ```
 
 
