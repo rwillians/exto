@@ -17,7 +17,7 @@ const TYPES: Record<Primitive, (col: Column) => string> = {
   INTEGER:  () => 'BIGINT',
   JSON:     () => 'JSONB',
   SEQUENCE: () => 'BIGINT',
-  STRING:   ({ length }) => `VARCHAR(${length})`,
+  STRING:   ({ length = 255 }) => `VARCHAR(${length})`,
   TEXT:     () => 'TEXT',
   UUID:     () => 'UUID',
 };
