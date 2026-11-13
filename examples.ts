@@ -148,6 +148,11 @@ const c5: boolean = await from(tasks)
   .where('status', '=', 'queued')
   .exists(db);
 
+const c6: boolean = await from(tasks)
+  .where('status', '=', 'scheduled')
+  .where('scheduledAt', '<', new Date()) // all `.where` params become ANDed together
+  .exists(db);
+
 // ─── updates ─────────────────────────────────────────────────────────────────
 
 const d1: Task[] = await from(tasks)
