@@ -312,8 +312,11 @@ class InsertBuilder<T extends Table> {
     return new InsertBuilder(this.table, [...this.rows, ...wrap(rows)]);
   }
 
-  async insert(db: IDatabase) {
-    if (this.rows.length === 0) return [];
+  insert(db: IDatabase): Promise<Infer<T['columns']>[]>;
+  insert(db: IDatabase, options: { returning: false }): Promise<undefined>;
+  insert<K extends keyof T['columns'] & string>(db: IDatabase, options: { returning: K[] }): Promise<Expand<Pick<Infer<T['columns']>, K>>[]>;
+  async insert(db: IDatabase, { returning }: { returning?: string[] | false } = {}) {
+    if (this.rows.length === 0) return returning === false ? undefined : [];
 
     const cols = Object.values(this.table.columns);
     const insertable = cols.filter(col => !col.generated || isGeneratedByClient(db.dialect, col));
@@ -332,8 +335,16 @@ class InsertBuilder<T extends Table> {
       .join(insertable, ', ', col => b.param(encode(db.dialect, col, row[col.key])))
       .push(')'));
 
-    const results = await run(db, renderReturning(b, cols).build());
-    return results.map(decoder(db.dialect, cols)) as Infer<T['columns']>[];
+    // an empty RETURNING isn't valid SQL; every row is inserted (or it throws),
+    // so `returning: []` gets one empty object per row without asking the db
+    if (returning === false || returning?.length === 0) {
+      await run(db, b.build());
+      return returning === false ? undefined : rows.map(() => ({}));
+    }
+
+    const returned = returning ? returning.map(key => columnOf(this.table, key)) : cols;
+    const results = await run(db, renderReturning(b, returned).build());
+    return results.map(decoder(db.dialect, returned));
   }
 }
 

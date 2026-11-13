@@ -90,6 +90,38 @@ for (const adapter of adapters) {
         expect(sqls.find(sql => sql.startsWith('INSERT INTO "tasks"'))).toContain('("id", ');
       });
 
+      test('returns only the requested fields', async () => {
+        const inserted = await into(tasks)
+          .values({ status: 'queued', type: 'x', payload: {}, scheduledAt: new Date() })
+          .insert(db, { returning: ['id', 'scheduledAt'] });
+
+        expect(inserted).toEqual([{ id: expect.stringMatching(UUID_V7), scheduledAt: expect.any(Date) }]);
+        expect(sqls.find(sql => sql.startsWith('INSERT INTO "tasks"'))).toEndWith(' RETURNING "id" AS "id", "scheduled_at" AS "scheduledAt"');
+      });
+
+      test('returns nothing given returning: false', async () => {
+        const inserted = await into(tasks)
+          .values({ status: 'queued', type: 'x', payload: {}, scheduledAt: new Date() })
+          .insert(db, { returning: false });
+
+        expect(inserted).toBeUndefined();
+        expect(sqls.find(sql => sql.startsWith('INSERT INTO "tasks"'))).not.toContain('RETURNING');
+        expect(await from(tasks).select(db, ['type'])).toEqual([{ type: 'x' }]);
+      });
+
+      test('returns an empty object per row given returning: []', async () => {
+        const inserted = await into(tasks)
+          .values([
+            { status: 'queued', type: 'x', payload: {}, scheduledAt: new Date() },
+            { status: 'queued', type: 'y', payload: {}, scheduledAt: new Date() },
+          ])
+          .insert(db, { returning: [] });
+
+        expect(inserted).toEqual([{}, {}]);
+        expect(sqls.find(sql => sql.startsWith('INSERT INTO "tasks"'))).not.toContain('RETURNING');
+        expect(await from(tasks).orderBy(['type']).select(db, ['type'])).toEqual([{ type: 'x' }, { type: 'y' }]);
+      });
+
       test('rejects invalid rows', async () => {
         const row = { status: 'queued', type: 'x', payload: {}, scheduledAt: new Date() } as const;
 

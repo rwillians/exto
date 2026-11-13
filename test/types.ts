@@ -36,6 +36,23 @@ export const checks = async (db: IDatabase) => {
 
   from(tasks).where('parentId', 'is', null).where('status', 'in', ['queued', 'running']);
 
+  const row = { status: 'queued', type: 'a', payload: {}, scheduledAt: new Date() } as const;
+
+  const inserted = await into(tasks).values(row).insert(db);
+  assert<Equals<typeof inserted, typeof tasks.infer[]>>();
+
+  const insertedIds = await into(tasks).values(row).insert(db, { returning: ['id'] });
+  assert<Equals<typeof insertedIds, { id: string }[]>>();
+
+  const nothing = await into(tasks).values(row).insert(db, { returning: false });
+  assert<Equals<typeof nothing, undefined>>();
+
+  const empties = await into(tasks).values(row).insert(db, { returning: [] });
+  assert<Equals<typeof empties, {}[]>>();
+
+  // @ts-expect-error returning uses field keys, not column names
+  into(tasks).values(row).insert(db, { returning: ['scheduled_at'] });
+
   // @ts-expect-error generated columns can't be inserted
   into(tasks).values({ id: 'x', status: 'queued', type: 'a', payload: {}, scheduledAt: new Date() });
 

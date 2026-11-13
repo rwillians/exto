@@ -27,13 +27,25 @@ export const migrate = defineMigrations({
 const db = sqlite.connect(':memory:');
 await migrate(db);
 
-await into(tasks)
+const a: Task[] = await into(tasks)
   .values({ status: 'scheduled', type: 'Prune', payload: {}, scheduledAt: new Date() })
   .values([
     { status: 'scheduled', type: 'Prune', payload: {}, scheduledAt: new Date() },
     { status: 'scheduled', type: 'Prune', payload: {}, scheduledAt: new Date() },
   ])
   .insert(db);
+
+const b: Pick<Task, 'id'>[] = await into(tasks)
+  .values({ status: 'scheduled', type: 'Prune', payload: {}, scheduledAt: new Date() })
+  .insert(db, { returning: ['id'] });
+
+const c: {}[] = await into(tasks)
+  .values({ status: 'scheduled', type: 'Prune', payload: {}, scheduledAt: new Date() })
+  .insert(db, { returning: [] });
+
+const d: undefined = await into(tasks)
+  .values({ status: 'scheduled', type: 'Prune', payload: {}, scheduledAt: new Date() })
+  .insert(db, { returning: false });
 
 await from(tasks)
   .where('scheduledAt', '<', new Date())
