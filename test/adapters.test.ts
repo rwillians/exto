@@ -59,6 +59,15 @@ for (const adapter of adapters) {
         expect(await from(tasks).select(db)).toEqual([]);
         expect(sqls.filter(sql => sql.startsWith('CREATE TABLE "tasks"'))).toHaveLength(1);
       });
+
+      test('create unique indexes', async () => {
+        const row = { day: '2026-11-13', amount: 1, ratio: 1, big: 1, doc: { a: [] } };
+        await into(things).values({ ...row, body: 'a' }).insert(db);
+
+        expect(sqls).toContain('CREATE UNIQUE INDEX "things_day_big_index" ON "things" ("day", "big")');
+        await expect(into(things).values({ ...row, body: 'b' }).insert(db)).rejects.toThrow();
+        expect(await into(things).values({ ...row, big: 2, body: 'b' }).insert(db)).toHaveLength(1);
+      });
     });
 
     describe('insert', () => {

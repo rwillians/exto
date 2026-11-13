@@ -506,6 +506,21 @@ const renderColumnDefinition = (dialect: Dialect, col: Column) => [
   col.unique && 'UNIQUE',
 ].filter(Boolean).join(' ');
 
+type IndexOptions = { ifNotExists?: boolean, name?: string };
+
+const createIndex = <T extends Table>(table: T, keys: (keyof T['columns'] & string)[], {
+  ifNotExists = false,
+  name,
+  unique = false,
+}: IndexOptions & { unique?: boolean } = {}) => ({
+  onto: async (db: IDatabase) => {
+    const cols = keys.map(key => columnOf(table, key).name);
+    const index = name ?? `${table.name}_${cols.join('_')}_index`;
+    const sql = `CREATE ${unique ? 'UNIQUE ' : ''}INDEX ${ifNotExists ? 'IF NOT EXISTS ' : ''}${quote(index)} ON ${quote(table.name)} (${cols.map(quote).join(', ')})`;
+    await run(db, { sql, params: [] });
+  },
+});
+
 const create = {
   table: (table: Table, { ifNotExists = false }: { ifNotExists?: boolean } = {}) => ({
     onto: async (db: IDatabase) => {
@@ -514,18 +529,9 @@ const create = {
       await run(db, { sql, params: [] });
     },
   }),
-  index: <T extends Table>(table: T, keys: (keyof T['columns'] & string)[], {
-    ifNotExists = false,
-    name,
-    unique = false,
-  }: { ifNotExists?: boolean, name?: string, unique?: boolean } = {}) => ({
-    onto: async (db: IDatabase) => {
-      const cols = keys.map(key => columnOf(table, key).name);
-      const index = name ?? `${table.name}_${cols.join('_')}_index`;
-      const sql = `CREATE ${unique ? 'UNIQUE ' : ''}INDEX ${ifNotExists ? 'IF NOT EXISTS ' : ''}${quote(index)} ON ${quote(table.name)} (${cols.map(quote).join(', ')})`;
-      await run(db, { sql, params: [] });
-    },
-  }),
+  index: createIndex,
+  uniqueIndex: <T extends Table>(table: T, keys: (keyof T['columns'] & string)[], options: IndexOptions = {}) =>
+    createIndex(table, keys, { ...options, unique: true }),
 };
 
 // ─── migrations ──────────────────────────────────────────────────────────────

@@ -32,5 +32,6 @@ export const migrate = defineMigrations({
   },
   '0002': async (db) => {
     await create.table(things).onto(db);
+    await create.uniqueIndex(things, ['day', 'big']).onto(db);
   },
 });

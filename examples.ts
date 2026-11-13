@@ -1,22 +1,39 @@
-import { create, defineMigrations, from, into, table } from './src';
+import { column, create, defineMigrations, from, into, table } from './src';
 import * as sqlite from './src/bun-sqlite';
 import { z } from 'zod/v4';
 
+// ─── custom types ────────────────────────────────────────────────────────────
+
+const tc = {
+  email: () => column({ type: 'STRING', schema: z.email() }),
+};
+
 // ─── schema ──────────────────────────────────────────────────────────────────
 
-export type Task = typeof tasks.infer;
-export type TaskInsert = typeof tasks.inferForInsert;
-export type TaskUpdate = typeof tasks.inferForUpdate;
+type Task = typeof tasks.infer;
+type TaskInsert = typeof tasks.inferForInsert;
+type TaskUpdate = typeof tasks.inferForUpdate;
 
-export const tasks = table('tasks', t => ({
+const tasks = table('tasks', t => ({
   id: t.uuid().generated().primaryKey(),
   parentId: t.uuid().nullable(),
   status: t.enum(['scheduled', 'queued', 'running', 'succeeded', 'failed', 'canceled']),
   type: t.string({ size: 48 }),
   payload: t.json(z.record(z.string(), z.any())),
   attempts: t.integer().default(0),
-  created_at: t.datetime().default(() => new Date()),
-  scheduled_at: t.datetime(),
+  createdAt: t.datetime().default(() => new Date()),
+  scheduledAt: t.datetime(),
+}));
+
+type User = typeof users.infer;
+type UserInsert = typeof users.inferForInsert;
+type UserUpdate = typeof users.inferForUpdate;
+
+const users = table('users', t => ({
+  id: t.uuid().generated().primaryKey(),
+  name: t.string({ size: 48 }),
+  email: tc.email(),
+  createdAt: t.datetime().default(() => new Date()),
 }));
 
 // ─── migrations ──────────────────────────────────────────────────────────────
@@ -25,6 +42,10 @@ export const migrate = defineMigrations({
   '0001': async (db) => {
     await create.table(tasks).onto(db);
     await create.index(tasks, ['status', 'scheduledAt']).onto(db);
+  },
+  '0002': async (db) => {
+    await create.table(users).onto(db);
+    await create.uniqueIndex(users, ['email']).onto(db);
   },
 });
 

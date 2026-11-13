@@ -112,4 +112,7 @@ export const checks = async (db: IDatabase) => {
 
   // @ts-expect-error index columns use field keys, not column names
   create.index(tasks, ['scheduled_at']);
+
+  // @ts-expect-error unique index columns use field keys, not column names
+  create.uniqueIndex(tasks, ['scheduled_at']);
 };
