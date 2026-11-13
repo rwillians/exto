@@ -125,24 +125,32 @@ const b5 = await into(users)
 
 // ─── selects ─────────────────────────────────────────────────────────────────
 
-const c1: Task[] = await from(tasks)
+const c0: Task[] = await from(tasks)
   .where('scheduledAt', '<', new Date())
   .limit(1)
   .offset(0)
-  .select(db);
+  .all(db);
+
+const c1: Task | null = await from(tasks)
+  .where('scheduledAt', '<', new Date())
+  // .limit(1)  limit is automatically set to 1
+  // .offset(0) offset is automatically set to 0
+  .one(db);
 
 const c2: Task[] = await from(tasks)
   .where('scheduledAt', '<', new Date())
   .orderBy(['scheduledAt'])
-  .select(db);
+  .all(db);
 
 const c3: Pick<Task, 'id' | 'type'>[] = await from(tasks)
   .where('scheduledAt', '<', new Date())
-  .select(db, ['id', 'type']);
+  .select(['id', 'type'])
+  .all(db);
 
 const c4: {}[] = await from(tasks)
   .where('scheduledAt', '<', new Date())
-  .select(db, []);
+  .select([])
+  .all(db);
 
 // ─── exists ──────────────────────────────────────────────────────────────────
 

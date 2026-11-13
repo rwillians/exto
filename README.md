@@ -23,8 +23,9 @@ await into(users)
 
 const jane = await from(users)
   .where('email', '=', 'JANE@example.com')
-  .select(db, ['id', 'name']);
-// → { id: number, name: string }[]
+  .select(['id', 'name'])
+  .one(db);
+// → { id: number, name: string } | null
 ```
 
 - Keys, operators and values are type-checked and autocompleted.
@@ -217,11 +218,14 @@ const rows: Task[] = await from(tasks)
   .orderBy(['scheduledAt', ['attempts', 'DESC']])
   .limit(10)
   .offset(20)
-  .select(db);
+  .all(db);
 
-await from(tasks).select(db, ['id', 'status']); // → Pick<Task, 'id' | 'status'>[]
-await from(tasks).where('status', '=', 'queued').exists(db); // → boolean
-await from(tasks).where('status', '=', 'queued').count(db);  // → number
+const queued = from(tasks).where('status', '=', 'queued');
+
+await queued.one(db);                          // → Task | null (the top row)
+await queued.select(['id', 'status']).all(db); // → Pick<Task, 'id' | 'status'>[]
+await queued.exists(db);                       // → boolean
+await queued.count(db);                        // → number
 ```
 
 | operator                               | value                      |
@@ -242,7 +246,7 @@ await from(tasks)
       expr('attempts', '>', 3),
     ]),
   ]))
-  .select(db);
+  .all(db);
 // WHERE ("status" = ? OR ("status" = ? AND "attempts" > ?))
 ```
 

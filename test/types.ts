@@ -31,11 +31,23 @@ assert<Equals<typeof tasks.inferForInsert, {
 assert<Equals<keyof typeof tasks.inferForUpdate, 'parentId' | 'status' | 'type' | 'payload' | 'attempts' | 'createdAt' | 'scheduledAt'>>();
 
 export const checks = async (db: IDatabase) => {
-  const picked = await from(tasks).select(db, ['id', 'type']);
+  const picked = await from(tasks).select(['id', 'type']).all(db);
   assert<Equals<typeof picked, { id: string; type: string }[]>>();
 
-  const pickedNone = await from(tasks).select(db, []);
+  const pickedNone = await from(tasks).select([]).all(db);
   assert<Equals<typeof pickedNone, {}[]>>();
+
+  const all = await from(tasks).where('status', '=', 'queued').all(db);
+  assert<Equals<typeof all, typeof tasks.infer[]>>();
+
+  const one = await from(tasks).where('status', '=', 'queued').one(db);
+  assert<Equals<typeof one, typeof tasks.infer | null>>();
+
+  const pickedOne = await from(tasks).select(['id']).where('status', '=', 'queued').orderBy(['createdAt']).one(db);
+  assert<Equals<typeof pickedOne, { id: string } | null>>();
+
+  // @ts-expect-error select uses field keys, not column names
+  from(tasks).select(['scheduled_at']);
 
   const exists = await from(tasks).where('status', '=', 'queued').exists(db);
   assert<Equals<typeof exists, boolean>>();

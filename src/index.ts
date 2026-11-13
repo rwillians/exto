@@ -480,51 +480,63 @@ type Direction = 'ASC' | 'DESC';
 
 type Query<T extends Table> = {
   table: T;
+  select?: string[];
   where: Condition[];
   orderBy: [Column, Direction][];
   limit?: number;
   offset?: number;
 };
 
-class QueryBuilder<T extends Table> {
+type Keys<T extends Table> = keyof T['columns'] & string;
+
+// `S` holds the selected fields, every field unless `select` says otherwise
+class QueryBuilder<T extends Table, S extends Keys<T> = Keys<T>> {
   constructor(private readonly query: Query<T>) { }
 
-  where<K extends keyof T['columns'] & string, O extends Op>(key: K, op: O, value: ValueFor<T['columns'][K]['output'], O>): QueryBuilder<T>;
-  where(expr: Expr<T['columns']>): QueryBuilder<T>;
-  where(...args: [string, Op, unknown] | [ExprNode]) {
-    const node = args.length === 1 ? args[0] : { key: args[0], op: args[1], value: args[2] };
-    return new QueryBuilder({ ...this.query, where: [...this.query.where, toCondition(this.query.table, node)] });
+  select<K extends Keys<T>>(keys: K[]) {
+    return new QueryBuilder<T, K>({ ...this.query, select: keys });
   }
 
-  orderBy(keys: (keyof T['columns'] & string | [keyof T['columns'] & string, Direction])[]) {
+  where<K extends Keys<T>, O extends Op>(key: K, op: O, value: ValueFor<T['columns'][K]['output'], O>): QueryBuilder<T, S>;
+  where(expr: Expr<T['columns']>): QueryBuilder<T, S>;
+  where(...args: [string, Op, unknown] | [ExprNode]) {
+    const node = args.length === 1 ? args[0] : { key: args[0], op: args[1], value: args[2] };
+    return new QueryBuilder<T, S>({ ...this.query, where: [...this.query.where, toCondition(this.query.table, node)] });
+  }
+
+  orderBy(keys: (Keys<T> | [Keys<T>, Direction])[]) {
     const orderBy = keys.map(key => typeof key === 'string'
       ? [columnOf(this.query.table, key), 'ASC'] as [Column, Direction]
       : [columnOf(this.query.table, key[0]), key[1]] as [Column, Direction]);
 
-    return new QueryBuilder({ ...this.query, orderBy: [...this.query.orderBy, ...orderBy] });
+    return new QueryBuilder<T, S>({ ...this.query, orderBy: [...this.query.orderBy, ...orderBy] });
   }
 
   limit(n: number) {
-    return new QueryBuilder({ ...this.query, limit: n });
+    return new QueryBuilder<T, S>({ ...this.query, limit: n });
   }
 
   offset(n: number) {
-    return new QueryBuilder({ ...this.query, offset: n });
+    return new QueryBuilder<T, S>({ ...this.query, offset: n });
   }
 
-  async select<K extends keyof T['columns'] & string = keyof T['columns'] & string>(db: IDatabase, keys?: K[]) {
-    const { table } = this.query;
-    const cols = keys
-      ? keys.map(key => columnOf(table, key))
+  async all(db: IDatabase) {
+    const { table, select } = this.query;
+    const cols = select
+      ? select.map(key => columnOf(table, key))
       : Object.values(table.columns);
 
     const rows = await run(db, this.renderSelect(new SqlBuilder(db.dialect), cols).build());
-    return rows.map(decoder(db.dialect, cols)) as Expand<Pick<Infer<T['columns']>, K>>[];
+    return rows.map(decoder(db.dialect, cols)) as Expand<Pick<Infer<T['columns']>, S>>[];
+  }
+
+  async one(db: IDatabase) {
+    const [row] = await this.top().all(db);
+    return row ?? null;
   }
 
   async exists(db: IDatabase) {
-    // keeps a `limit(0)`, which can never match
-    const rows = await this.limit(Math.min(this.query.limit ?? 1, 1)).select(db, []);
+    const rows = await this.top().select([]).all(db);
     return rows.length > 0;
   }
 
@@ -591,6 +603,11 @@ class QueryBuilder<T extends Table> {
     return b;
   }
 
+  // keeps a `limit(0)`, which can never match
+  private top() {
+    return this.limit(Math.min(this.query.limit ?? 1, 1));
+  }
+
   // UPDATE/DELETE ... ORDER BY/LIMIT isn't portable, so refuse it rather than
   // silently affecting more rows than the query suggests
   private assertUnbounded(operation: string) {
@@ -654,7 +671,7 @@ type Migration = (db: IDatabase) => Promise<void>;
 const defineMigrations = (migrations: Record<string, Migration>) => async (db: IDatabase) => {
   await create.table(schemaMigrations, { ifNotExists: true }).onto(db);
 
-  const applied = new Set((await from(schemaMigrations).select(db, ['id'])).map(row => row.id));
+  const applied = new Set((await from(schemaMigrations).select(['id']).all(db)).map(row => row.id));
 
   for (const id of Object.keys(migrations).sort()) {
     if (applied.has(id)) continue;

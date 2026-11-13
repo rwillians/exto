@@ -67,7 +67,7 @@ for (const adapter of adapters) {
 
       test('are applied once', async () => {
         await migrate(db);
-        expect(await from(tasks).select(db)).toEqual([]);
+        expect(await from(tasks).all(db)).toEqual([]);
         expect(sqls.filter(sql => sql.startsWith('CREATE TABLE "tasks"'))).toHaveLength(1);
       });
 
@@ -134,7 +134,7 @@ for (const adapter of adapters) {
 
         expect(inserted).toBeUndefined();
         expect(sqls.find(sql => sql.startsWith('INSERT INTO "tasks"'))).not.toContain('RETURNING');
-        expect(await from(tasks).select(db, ['type'])).toEqual([{ type: 'x' }]);
+        expect(await from(tasks).select(['type']).all(db)).toEqual([{ type: 'x' }]);
       });
 
       test('returns an empty object per row given returning: []', async () => {
@@ -147,7 +147,7 @@ for (const adapter of adapters) {
 
         expect(inserted).toEqual([{}, {}]);
         expect(sqls.find(sql => sql.startsWith('INSERT INTO "tasks"'))).toEndWith(' RETURNING 1');
-        expect(await from(tasks).orderBy(['type']).select(db, ['type'])).toEqual([{ type: 'x' }, { type: 'y' }]);
+        expect(await from(tasks).orderBy(['type']).select(['type']).all(db)).toEqual([{ type: 'x' }, { type: 'y' }]);
       });
 
       test('rejects invalid rows', async () => {
@@ -162,7 +162,7 @@ for (const adapter of adapters) {
         expect(await issuesOf({ ...row, extra: 1 })).toEqual([{ path: [0, 'extra'], message: 'unknown field' }]);
         expect(await issuesOf({ ...row, type: 'x'.repeat(49) })).toEqual([{ path: [0, 'type'], message: 'must be at most 48 characters long' }]);
         expect(await issuesOf({ status: 'queued', payload: {}, scheduledAt: new Date() })).toEqual([{ path: [0, 'type'], message: 'is required' }]);
-        expect(await from(tasks).select(db)).toEqual([]);
+        expect(await from(tasks).all(db)).toEqual([]);
       });
 
       test('validates json columns with third-party standard schemas', async () => {
@@ -177,7 +177,7 @@ for (const adapter of adapters) {
         const row = { day: '2026-11-13', amount: 1, ratio: 1, big: 1, doc: { a: [] }, body: 'a', huge: 2n ** 53n + 1n };
         await into(things).values([row, { ...row, big: 2, body: 'b', huge: -(2n ** 62n) }]).insert(db);
 
-        expect(await from(things).where('huge', '>', 2n ** 53n).select(db, ['huge'])).toEqual([{ huge: 2n ** 53n + 1n }]);
+        expect(await from(things).where('huge', '>', 2n ** 53n).select(['huge']).all(db)).toEqual([{ huge: 2n ** 53n + 1n }]);
         expect(await from(things).where('huge', '>', 2n ** 53n).update(db, { inc: { huge: 1 }, returning: ['huge'] })).toEqual([{ huge: 2n ** 53n + 2n }]);
         await expect(into(things).values({ ...row, big: 3, body: 'c', huge: 1 as any }).insert(db)).rejects.toBeInstanceOf(ValidationError);
       });
@@ -194,7 +194,7 @@ for (const adapter of adapters) {
         await into(things).values(row).insert(db);
         await create.uniqueIndex(things, ['label']).onto(db);
 
-        expect(await from(things).where('label', '=', 'jane@example.com').select(db, ['label'])).toEqual([{ label: 'Jane@Example.com' }]);
+        expect(await from(things).where('label', '=', 'jane@example.com').select(['label']).all(db)).toEqual([{ label: 'Jane@Example.com' }]);
         await expect(into(things).values({ ...row, big: 2, body: 'b', label: 'JANE@example.com' }).insert(db)).rejects.toThrow();
       });
 
@@ -209,7 +209,7 @@ for (const adapter of adapters) {
           .where('flag', '=', false)
           .where('day', '=', '2026-11-12')
           .where('big', '>', 2 ** 39)
-          .select(db);
+          .all(db);
 
         expect(again).toEqual(thing);
       });
@@ -227,7 +227,7 @@ for (const adapter of adapters) {
 
         expect(sqls.at(-1)).toContain(' ON CONFLICT ("day", "big") DO NOTHING RETURNING ');
         expect(inserted).toEqual([{ body: 'c' }]);
-        expect(await from(things).orderBy(['big']).select(db, ['body'])).toEqual([{ body: 'a' }, { body: 'c' }]);
+        expect(await from(things).orderBy(['big']).select(['body']).all(db)).toEqual([{ body: 'a' }, { body: 'c' }]);
       });
 
       test('throws', async () => {
@@ -235,7 +235,7 @@ for (const adapter of adapters) {
 
         await expect(into(things).values({ ...row, body: 'b' }).insert(db, { conflict: { on: ['day', 'big'], do: 'throw' } })).rejects.toThrow();
         expect(sqls.at(-1)).not.toContain('ON CONFLICT');
-        expect(await from(things).select(db, ['body'])).toEqual([{ body: 'a' }]);
+        expect(await from(things).select(['body']).all(db)).toEqual([{ body: 'a' }]);
       });
 
       test('does nothing on any conflict', async () => {
@@ -280,7 +280,7 @@ for (const adapter of adapters) {
     describe('select', () => {
       test('filters and orders', async () => {
         const [first, second] = await insertTasks();
-        const due = await from(tasks).where('scheduledAt', '<', new Date()).orderBy([['scheduledAt', 'DESC']]).select(db);
+        const due = await from(tasks).where('scheduledAt', '<', new Date()).orderBy([['scheduledAt', 'DESC']]).all(db);
 
         expect(due.map(task => task.id)).toEqual([second!.id, first!.id]);
       });
@@ -288,22 +288,44 @@ for (const adapter of adapters) {
       test('limits and offsets', async () => {
         const [, , third] = await insertTasks();
 
-        expect(await from(tasks).where('scheduledAt', '<', new Date()).limit(1).offset(0).select(db)).toHaveLength(1);
-        expect(await from(tasks).orderBy(['scheduledAt']).offset(2).select(db, ['id'])).toEqual([{ id: third!.id }]);
+        expect(await from(tasks).where('scheduledAt', '<', new Date()).limit(1).offset(0).all(db)).toHaveLength(1);
+        expect(await from(tasks).orderBy(['scheduledAt']).offset(2).select(['id']).all(db)).toEqual([{ id: third!.id }]);
       });
 
       test('picks columns', async () => {
         await insertTasks();
-        const rows = await from(tasks.as('t')).where('type', 'like', 'Pru%').select(db, ['id', 'type']);
+        const rows = await from(tasks.as('t')).where('type', 'like', 'Pru%').select(['id', 'type']).all(db);
 
         expect(rows).toHaveLength(2);
         expect(Object.keys(rows[0]!)).toEqual(['id', 'type']);
       });
 
+      test('selects before or after filtering', async () => {
+        await insertTasks();
+
+        const before = await from(tasks).select(['type']).where('status', '=', 'queued').all(db);
+        const after = await from(tasks).where('status', '=', 'queued').select(['type']).all(db);
+
+        expect(before).toEqual([{ type: 'Other' }]);
+        expect(after).toEqual(before);
+      });
+
+      test('fetches only the top row', async () => {
+        const [first, second] = await insertTasks();
+        const ordered = from(tasks).orderBy(['scheduledAt']);
+
+        expect(await ordered.one(db)).toEqual(first!);
+        expect(sqls.at(-1)).toEndWith(` LIMIT ${db.dialect.placeholder(1)}`);
+        expect(await ordered.offset(1).select(['id']).one(db)).toEqual({ id: second!.id });
+        expect(await ordered.where('status', '=', 'failed').one(db)).toBeNull();
+        expect(await ordered.offset(3).one(db)).toBeNull();
+        expect(await ordered.limit(0).one(db)).toBeNull();
+      });
+
       test('returns an empty object per row given no columns', async () => {
         await insertTasks();
 
-        expect(await from(tasks.as('t')).where('type', '=', 'Prune').select(db, [])).toEqual([{}, {}]);
+        expect(await from(tasks.as('t')).where('type', '=', 'Prune').select([]).all(db)).toEqual([{}, {}]);
         expect(sqls.at(-1)).toStartWith('SELECT 1 FROM "tasks" AS "t"');
       });
 
@@ -321,10 +343,10 @@ for (const adapter of adapters) {
       test('supports in, not in and is null', async () => {
         await insertTasks();
 
-        expect(await from(tasks).where('status', 'in', []).select(db)).toHaveLength(0);
-        expect(await from(tasks).where('status', 'not in', []).select(db)).toHaveLength(3);
-        expect(await from(tasks).where('status', 'not in', ['queued']).where('parentId', 'is', null).select(db)).toHaveLength(2);
-        expect(await from(tasks).where('parentId', 'is not', null).select(db)).toHaveLength(0);
+        expect(await from(tasks).where('status', 'in', []).all(db)).toHaveLength(0);
+        expect(await from(tasks).where('status', 'not in', []).all(db)).toHaveLength(3);
+        expect(await from(tasks).where('status', 'not in', ['queued']).where('parentId', 'is', null).all(db)).toHaveLength(2);
+        expect(await from(tasks).where('parentId', 'is not', null).all(db)).toHaveLength(0);
       });
 
       test('supports or and and groups', async () => {
@@ -333,7 +355,7 @@ for (const adapter of adapters) {
 
         const anyOf = await from(tasks)
           .where(expr.or([expr('status', '=', 'queued'), expr('scheduledAt', '<', new Date())]))
-          .select(db, ['id']);
+          .select(['id']).all(db);
 
         expect(anyOf.map(task => task.id).sort()).toEqual([first!.id, second!.id, third!.id].sort());
 
@@ -343,7 +365,7 @@ for (const adapter of adapters) {
             expr.and([expr('status', '=', 'scheduled'), expr('attempts', '=', 0)]),
             expr('status', '=', 'queued'),
           ]))
-          .select(db, ['id']);
+          .select(['id']).all(db);
 
         expect(sqls.at(-1)).toEndWith(` WHERE "tasks"."type" = ${p(1)} AND (("tasks"."status" = ${p(2)} AND "tasks"."attempts" = ${p(3)}) OR "tasks"."status" = ${p(4)})`);
         expect(nested.map(task => task.id).sort()).toEqual([first!.id, second!.id].sort());
@@ -365,8 +387,8 @@ for (const adapter of adapters) {
       test('treats empty groups like empty in lists', async () => {
         await insertTasks();
 
-        expect(await from(tasks).where(expr.or([])).select(db)).toHaveLength(0);
-        expect(await from(tasks).where(expr.and([])).select(db)).toHaveLength(3);
+        expect(await from(tasks).where(expr.or([])).all(db)).toHaveLength(0);
+        expect(await from(tasks).where(expr.and([])).all(db)).toHaveLength(3);
       });
 
       test('rejects unknown keys in expressions', () => {
@@ -399,7 +421,7 @@ for (const adapter of adapters) {
         expect(sqls.at(-1)).toEndWith(' RETURNING 1');
         expect(await scheduled.update(db, { set: { type: 'z' }, returning: false })).toBeUndefined();
         expect(sqls.at(-1)).not.toContain('RETURNING');
-        expect(await scheduled.select(db, ['type'])).toEqual([{ type: 'z' }, { type: 'z' }]);
+        expect(await scheduled.select(['type']).all(db)).toEqual([{ type: 'z' }, { type: 'z' }]);
       });
 
       test('filters with expressions', async () => {
@@ -425,7 +447,7 @@ for (const adapter of adapters) {
 
         expect(await from(tasks.as('t')).where('status', '=', 'scheduled').delete(db)).toBeUndefined();
         expect(sqls.at(-1)).not.toContain('RETURNING');
-        expect(await from(tasks).select(db)).toHaveLength(1);
+        expect(await from(tasks).all(db)).toHaveLength(1);
       });
 
       test('returns the deleted rows given returning: true', async () => {
@@ -434,7 +456,7 @@ for (const adapter of adapters) {
 
         expect(deleted).toHaveLength(2);
         expect(deleted).toEqual(expect.arrayContaining([first!, second!]));
-        expect(await from(tasks).select(db)).toHaveLength(1);
+        expect(await from(tasks).all(db)).toHaveLength(1);
       });
 
       test('returns only the requested fields', async () => {
@@ -443,7 +465,7 @@ for (const adapter of adapters) {
         expect(await from(tasks).where('id', '=', first!.id).delete(db, { returning: ['id'] })).toEqual([{ id: first!.id }]);
         expect(await from(tasks).where('id', 'in', [second!.id, third!.id]).delete(db, { returning: [] })).toEqual([{}, {}]);
         expect(sqls.at(-1)).toEndWith(' RETURNING 1');
-        expect(await from(tasks).select(db)).toEqual([]);
+        expect(await from(tasks).all(db)).toEqual([]);
       });
 
       test('rejects bounded queries', async () => {
@@ -457,7 +479,7 @@ for (const adapter of adapters) {
           await into(tasks).values({ status: 'queued', type: 'x', payload: {}, scheduledAt: new Date() }).insert(tx);
         });
 
-        expect(await from(tasks).select(db)).toHaveLength(1);
+        expect(await from(tasks).all(db)).toHaveLength(1);
       });
 
       test('rolls back, including nested savepoints', async () => {
@@ -471,11 +493,11 @@ for (const adapter of adapters) {
             throw new Error('inner');
           })).rejects.toThrow('inner');
 
-          expect(await from(tasks).select(tx)).toHaveLength(0);
+          expect(await from(tasks).all(tx)).toHaveLength(0);
           throw new Error('outer');
         })).rejects.toThrow('outer');
 
-        expect(await from(tasks).select(db)).toHaveLength(3);
+        expect(await from(tasks).all(db)).toHaveLength(3);
       });
     });
   });
