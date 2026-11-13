@@ -173,6 +173,22 @@ for (const adapter of adapters) {
         expect(await into(things).values({ ...row, doc: { a: [1] } }).insert(db)).toHaveLength(1);
       });
 
+      test('keeps bigints exact', async () => {
+        const row = { day: '2026-11-13', amount: 1, ratio: 1, big: 1, doc: { a: [] }, body: 'a', huge: 2n ** 53n + 1n };
+        await into(things).values([row, { ...row, big: 2, body: 'b', huge: -(2n ** 62n) }]).insert(db);
+
+        expect(await from(things).where('huge', '>', 2n ** 53n).select(db, ['huge'])).toEqual([{ huge: 2n ** 53n + 1n }]);
+        expect(await from(things).where('huge', '>', 2n ** 53n).update(db, { inc: { huge: 1 }, returning: ['huge'] })).toEqual([{ huge: 2n ** 53n + 2n }]);
+        await expect(into(things).values({ ...row, big: 3, body: 'c', huge: 1 as any }).insert(db)).rejects.toBeInstanceOf(ValidationError);
+      });
+
+      test('gives decimals a precision and scale on postgres', () => {
+        const ddl = sqls.find(sql => sql.startsWith('CREATE TABLE "things"'));
+
+        expect(ddl).toContain(adapter.name === 'bun-postgres' ? '"price" NUMERIC(10, 2)' : '"price" NUMERIC)');
+        expect(ddl).toContain('"amount" NUMERIC NOT NULL');
+      });
+
       test('compares citext case-insensitively', async () => {
         const row = { day: '2026-11-13', amount: 1, ratio: 1, big: 1, doc: { a: [] }, body: 'a', label: 'Jane@Example.com' };
         await into(things).values(row).insert(db);
@@ -183,7 +199,7 @@ for (const adapter of adapters) {
       });
 
       test('round-trips every primitive', async () => {
-        const row = { blob: new Uint8Array([1, 2, 255]), day: '2026-11-12', amount: 12.5, ratio: -0.25, big: 2 ** 40, doc: { a: [1, 2] }, body: 'hi', label: 'Hi There' };
+        const row = { blob: new Uint8Array([1, 2, 255]), day: '2026-11-12', amount: 12.5, ratio: -0.25, big: 2 ** 40, doc: { a: [1, 2] }, body: 'hi', label: 'Hi There', huge: 2n ** 63n - 1n, price: 12.34 };
         const [thing] = await into(things).values(row).insert(db);
 
         expect(thing).toEqual({ seq: 1, flag: false, list: ['x', 1], ...row, blob: expect.any(Uint8Array) });

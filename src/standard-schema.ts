@@ -159,6 +159,15 @@ export const array = <T extends StandardSchemaV1>(schema: T) => define<input<T>[
 });
 
 /**
+ * @public  Defines a standard schema for bigints.
+ * @since   0.1.0
+ * @version 1
+ */
+export const bigint = () => define<bigint>((input) => typeof input === 'bigint'
+  ? { value: input }
+  : fail('must be a bigint'));
+
+/**
  * @public  Defines a standard schema for boolean values.
  * @since   0.1.0
  * @version 1

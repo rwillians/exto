@@ -2,6 +2,7 @@ import { Database, type SQLQueryBindings } from 'bun:sqlite';
 import type { Codec, Dialect, IDatabase, ILogger, Primitive, Row } from './index';
 
 const TYPES: Record<Primitive, string> = {
+  BIGINT:   'INTEGER',
   BINARY:   'BLOB',
   BOOLEAN:  'INTEGER',
   CITEXT:   'TEXT COLLATE NOCASE',
@@ -22,6 +23,13 @@ const identity: Codec = {
   decode: (value) => value,
 };
 
+// integers are read as bigints (see `execute`), so those that aren't BIGINT
+// columns go back to being numbers
+const numeric: Codec = {
+  encode: (value) => value,
+  decode: (value: number | bigint) => Number(value),
+};
+
 const dialect: Dialect = {
   placeholder: () => '?',
   type: (col) => TYPES[col.type],
@@ -31,16 +39,17 @@ const dialect: Dialect = {
     return undefined;
   },
   codecs: {
+    BIGINT:   { encode: (value: bigint) => value, decode: (value: number | bigint) => BigInt(value) },
     BINARY:   identity,
-    BOOLEAN:  { encode: (value: boolean) => (value ? 1 : 0), decode: (value: number) => value === 1 },
+    BOOLEAN:  { encode: (value: boolean) => (value ? 1 : 0), decode: (value: number | bigint) => Number(value) === 1 },
     CITEXT:   identity,
     DATE:     identity,
-    DATETIME: { encode: (value: Date) => value.getTime(), decode: (value: number) => new Date(value) },
-    DECIMAL:  identity,
-    FLOAT:    identity,
-    INTEGER:  identity,
+    DATETIME: { encode: (value: Date) => value.getTime(), decode: (value: number | bigint) => new Date(Number(value)) },
+    DECIMAL:  numeric,
+    FLOAT:    numeric,
+    INTEGER:  numeric,
     JSON:     { encode: (value) => JSON.stringify(value), decode: (value: string) => JSON.parse(value) },
-    SEQUENCE: identity,
+    SEQUENCE: numeric,
     STRING:   identity,
     TEXT:     identity,
     UUID:     identity,
@@ -55,7 +64,8 @@ class BunSQLite implements IDatabase {
               private readonly depth = 0) { }
 
   async execute(sql: string, params: unknown[]) {
-    return this.conn.prepare(sql).all(...(params as SQLQueryBindings[])) as Row[];
+    // without safe integers, bun:sqlite rounds anything beyond 2^53
+    return this.conn.prepare(sql).safeIntegers(true).all(...(params as SQLQueryBindings[])) as Row[];
   }
 
   // bun:sqlite's own `transaction()` is synchronous and would commit before an

@@ -24,6 +24,8 @@ export const things = table('things', t => ({
   body: t.text().unique(),
   list: t.json(z.array(z.union([z.string(), z.number()]))).default(() => ['x', 1]),
   label: t.citext().nullable(),
+  huge: t.bigint().nullable(),
+  price: t.decimal({ precision: 10, scale: 2 }).nullable(),
 }));
 
 export const migrate = defineMigrations({

@@ -1,6 +1,6 @@
 // type-level assertions, checked by `bun check` (never executed)
-import { create, expr, from, into, type IDatabase } from '../src';
-import { tasks } from './fixtures';
+import { create, expr, from, into, t, type IDatabase } from '../src';
+import { tasks, things } from './fixtures';
 
 type Equals<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
 const assert = <_ extends true>() => { };
@@ -150,6 +150,14 @@ export const checks = async (db: IDatabase) => {
 
   // @ts-expect-error index columns use field keys, not column names
   create.index(tasks, ['scheduled_at']);
+
+  assert<Equals<typeof things.infer['huge'], bigint | null>>();
+
+  // @ts-expect-error decimals can't have a scale without a precision
+  t.decimal({ scale: 2 });
+
+  // @ts-expect-error decimals can't have a precision without a scale
+  t.decimal({ precision: 10 });
 
   // @ts-expect-error unique index columns use field keys, not column names
   create.uniqueIndex(tasks, ['scheduled_at']);

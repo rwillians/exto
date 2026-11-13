@@ -5,7 +5,8 @@ import { type CamelCase, type Expand, camelCase, snakeCase, wrap } from './utils
 // ─── columns ─────────────────────────────────────────────────────────────────
 
 type Primitive =
-  'BINARY'
+  'BIGINT'
+  | 'BINARY'
   | 'BOOLEAN'
   | 'CITEXT'
   | 'DATE'
@@ -25,6 +26,8 @@ type ColumnProps<S extends std.Schema = std.Schema> = {
   default?: unknown;
   generated?: true;
   length?: number;
+  precision?: number;
+  scale?: number;
   nullable?: true;
   primaryKey?: true;
   unique?: true;
@@ -71,13 +74,16 @@ class ColumnBuilder<P extends ColumnProps> {
 const column = <P extends ColumnProps>(props: P) => new ColumnBuilder(props);
 
 const types = {
+  bigint: () => column({ type: 'BIGINT', schema: std.bigint() }),
   binary: () => column({ type: 'BINARY', schema: std.instanceOf(Uint8Array) }),
   boolean: () => column({ type: 'BOOLEAN', schema: std.boolean() }),
   // case-insensitive text; postgres needs `CREATE EXTENSION citext` for it
   citext: () => column({ type: 'CITEXT', schema: std.string() }),
   date: () => column({ type: 'DATE', schema: std.isoDate() }),
   datetime: () => column({ type: 'DATETIME', schema: std.date() }),
-  decimal: () => column({ type: 'DECIMAL', schema: std.number() }),
+  // `precision` and `scale` only shape postgres' NUMERIC; values are still
+  // numbers, so they're as exact as a double
+  decimal: (options?: { precision: number, scale: number }) => column({ type: 'DECIMAL', schema: std.number(), ...options }),
   enum: <const T extends readonly [string, ...string[]]>(values: T) => column({
     type: 'STRING',
     schema: std.enumOf(values),
@@ -105,7 +111,7 @@ type Table<N extends string = string, C extends Columns = Columns> = {
 type OmitOnInsert = { generated: true };
 type OptionalOnInsert = { default: unknown } | { nullable: true };
 type OmitOnUpdate = { generated: true } | { primaryKey: true };
-type NumericType = 'DECIMAL' | 'FLOAT' | 'INTEGER';
+type NumericType = 'BIGINT' | 'DECIMAL' | 'FLOAT' | 'INTEGER';
 
 type Infer<C extends Columns> = Expand<{
   [K in keyof C]: C[K]['output'];
@@ -356,7 +362,7 @@ type Assignment = { col: Column; op: 'set' | 'inc' | 'replace'; value?: unknown 
 
 const parseChanges = (table: Table, { set = {}, inc = {}, replace = [] }: { set?: Row; inc?: Row; replace?: string[] }) => {
   const updatable = Object.values(table.columns).filter(col => !col.generated && !col.primaryKey);
-  const numeric = updatable.filter(col => ['DECIMAL', 'FLOAT', 'INTEGER'].includes(col.type));
+  const numeric = updatable.filter(col => ['BIGINT', 'DECIMAL', 'FLOAT', 'INTEGER'].includes(col.type));
 
   const sets = std.parseOrThrow(std.strictObject(Object.fromEntries(updatable.map(col => [col.key, std.optional(col.schema)]))), set);
   const incs = std.parseOrThrow(std.strictObject(Object.fromEntries(numeric.map(col => [col.key, std.optional(std.number())]))), inc);

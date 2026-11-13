@@ -1,13 +1,18 @@
 import { SQL, type TransactionSQL } from 'bun';
 import type { Codec, Column, Dialect, IDatabase, ILogger, Primitive, Row } from './index';
+import { raise } from './utils';
 
 const TYPES: Record<Primitive, (col: Column) => string> = {
+  BIGINT:   () => 'BIGINT',
   BINARY:   () => 'BYTEA',
   BOOLEAN:  () => 'BOOLEAN',
   CITEXT:   () => 'CITEXT',
   DATE:     () => 'DATE',
   DATETIME: () => 'TIMESTAMPTZ',
-  DECIMAL:  () => 'NUMERIC',
+  DECIMAL:  ({ precision, scale }) =>
+      [precision, scale].every(Number.isInteger) ? `NUMERIC(${precision}, ${scale})`
+    : [precision, scale].some(Number.isInteger)  ? raise('precision and scale are mutually inclusive, either you provide both or neither')
+    : 'NUMERIC',
   FLOAT:    () => 'DOUBLE PRECISION',
   INTEGER:  () => 'BIGINT',
   JSON:     () => 'JSONB',
@@ -29,6 +34,7 @@ const dialect: Dialect = {
     ? 'GENERATED ALWAYS AS IDENTITY'
     : undefined,
   codecs: {
+    BIGINT:   { encode: (value: bigint) => value, decode: (value: string | bigint | number) => BigInt(value) },
     BINARY:   identity,
     BOOLEAN:  identity,
     CITEXT:   identity,
