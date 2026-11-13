@@ -1,5 +1,5 @@
 // type-level assertions, checked by `bun check` (never executed)
-import { create, from, into, type IDatabase } from '../src';
+import { create, expr, from, into, type IDatabase } from '../src';
 import { tasks } from './fixtures';
 
 type Equals<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
@@ -115,6 +115,26 @@ export const checks = async (db: IDatabase) => {
 
   // @ts-expect-error values must match the column type
   from(tasks).where('scheduledAt', '<', 'yesterday');
+
+  from(tasks).where(expr.or([
+    expr.and([expr('status', '=', 'scheduled'), expr('scheduledAt', '<', new Date())]),
+    expr('parentId', 'is', null),
+  ]));
+
+  // @ts-expect-error expr checks enum values
+  from(tasks).where(expr('status', '=', 'nope'));
+
+  // @ts-expect-error expr checks enum values inside groups
+  from(tasks).where(expr.or([expr.and([expr('status', '=', 'nope')])]));
+
+  // @ts-expect-error expr checks values against the column type
+  from(tasks).where(expr.and([expr('scheduledAt', '<', 'yesterday')]));
+
+  // @ts-expect-error expr rejects unknown keys
+  from(tasks).where(expr.or([expr('nope', '=', 1)]));
+
+  // @ts-expect-error expr uses field keys, not column names
+  from(tasks).where(expr('scheduled_at', '<', new Date()));
 
   // @ts-expect-error unknown columns are rejected
   from(tasks).where('nope', '=', 1);

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
-import { ValidationError, from, into, type IDatabase } from '../src';
+import { ValidationError, expr, from, into, type IDatabase } from '../src';
 import * as pg from '../src/bun-postgres';
 import * as sqlite from '../src/bun-sqlite';
 import { migrate, tasks, things } from './fixtures';
@@ -288,6 +288,39 @@ for (const adapter of adapters) {
         expect(await from(tasks).where('status', 'not in', ['queued']).where('parentId', 'is', null).select(db)).toHaveLength(2);
         expect(await from(tasks).where('parentId', 'is not', null).select(db)).toHaveLength(0);
       });
+
+      test('supports or and and groups', async () => {
+        const [first, second, third] = await insertTasks();
+        const p = (n: number) => db.dialect.placeholder(n);
+
+        const anyOf = await from(tasks)
+          .where(expr.or([expr('status', '=', 'queued'), expr('scheduledAt', '<', new Date())]))
+          .select(db, ['id']);
+
+        expect(anyOf.map(task => task.id).sort()).toEqual([first!.id, second!.id, third!.id].sort());
+
+        const nested = await from(tasks)
+          .where('type', '=', 'Prune')
+          .where(expr.or([
+            expr.and([expr('status', '=', 'scheduled'), expr('attempts', '=', 0)]),
+            expr('status', '=', 'queued'),
+          ]))
+          .select(db, ['id']);
+
+        expect(sqls.at(-1)).toEndWith(` WHERE "tasks"."type" = ${p(1)} AND (("tasks"."status" = ${p(2)} AND "tasks"."attempts" = ${p(3)}) OR "tasks"."status" = ${p(4)})`);
+        expect(nested.map(task => task.id).sort()).toEqual([first!.id, second!.id].sort());
+      });
+
+      test('treats empty groups like empty in lists', async () => {
+        await insertTasks();
+
+        expect(await from(tasks).where(expr.or([])).select(db)).toHaveLength(0);
+        expect(await from(tasks).where(expr.and([])).select(db)).toHaveLength(3);
+      });
+
+      test('rejects unknown keys in expressions', () => {
+        expect(() => from(tasks).where(expr.or([expr('nope' as any, '=', 1)]))).toThrow();
+      });
     });
 
     describe('update', () => {
@@ -316,6 +349,16 @@ for (const adapter of adapters) {
         expect(await scheduled.update(db, { set: { type: 'z' }, returning: false })).toBeUndefined();
         expect(sqls.at(-1)).not.toContain('RETURNING');
         expect(await scheduled.select(db, ['type'])).toEqual([{ type: 'z' }, { type: 'z' }]);
+      });
+
+      test('filters with expressions', async () => {
+        await insertTasks();
+        const updated = await from(tasks)
+          .where(expr.or([expr('status', '=', 'queued'), expr('attempts', '>', 0)]))
+          .update(db, { inc: { attempts: 1 }, returning: ['attempts'] });
+
+        expect(updated).toEqual([{ attempts: 6 }]);
+        expect(await from(tasks).where(expr.or([expr('type', '=', 'Other'), expr('parentId', 'is not', null)])).delete(db, { returning: ['type'] })).toEqual([{ type: 'Other' }]);
       });
 
       test('rejects empty changes and bounded queries', async () => {

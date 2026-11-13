@@ -287,9 +287,40 @@ type ValueFor<V, O extends Op> =
   : O extends 'like' | 'not like' ? string
   : NonNullable<V>;
 
-type Condition = { col: Column; op: Op; value: unknown };
+type ExprNode =
+  | { key: string; op: Op; value: unknown }
+  | { group: 'AND' | 'OR'; exprs: ExprNode[] };
 
-const renderCondition = (b: SqlBuilder, qualifier?: string) => ({ col, op, value }: Condition) => {
+declare const COLUMNS: unique symbol;
+
+// the columns are type-only, so `.where` can infer them back into `expr`'s
+// arguments (keys, operators and values get checked and autocompleted)
+type Expr<C extends Columns> = ExprNode & { readonly [COLUMNS]?: (columns: C) => C };
+
+const expr = Object.assign(
+  <C extends Columns, K extends keyof C & string, O extends Op>(key: K, op: O, value: ValueFor<C[K]['output'], O>): Expr<C> => ({ key, op, value }),
+  {
+    and: <C extends Columns>(exprs: Expr<C>[]): Expr<C> => ({ group: 'AND', exprs }),
+    or: <C extends Columns>(exprs: Expr<C>[]): Expr<C> => ({ group: 'OR', exprs }),
+  },
+);
+
+type Condition =
+  | { col: Column; op: Op; value: unknown }
+  | { group: 'AND' | 'OR'; conditions: Condition[] };
+
+const toCondition = (table: Table, node: ExprNode): Condition => 'group' in node
+  ? { group: node.group, conditions: node.exprs.map(expr => toCondition(table, expr)) }
+  : { col: columnOf(table, node.key), op: node.op, value: node.value };
+
+const renderCondition = (b: SqlBuilder, qualifier?: string) => (condition: Condition): SqlBuilder => {
+  if ('group' in condition) {
+    const { group, conditions } = condition;
+    if (conditions.length === 0) return b.push(group === 'AND' ? '1 = 1' : '1 = 0');
+    return b.push('(').join(conditions, ` ${group} `, renderCondition(b, qualifier)).push(')');
+  }
+
+  const { col, op, value } = condition;
   if (op === 'is' || op === 'is not') return b.push(ref(col, qualifier), ' ', op.toUpperCase(), ' NULL');
   if (op !== 'in' && op !== 'not in') return b.push(ref(col, qualifier), ' ', op.toUpperCase(), ' ').param(encode(b.dialect, col, value));
 
@@ -440,9 +471,11 @@ type Query<T extends Table> = {
 class QueryBuilder<T extends Table> {
   constructor(private readonly query: Query<T>) { }
 
-  where<K extends keyof T['columns'] & string, O extends Op>(key: K, op: O, value: ValueFor<T['columns'][K]['output'], O>) {
-    const condition = { col: columnOf(this.query.table, key), op, value };
-    return new QueryBuilder({ ...this.query, where: [...this.query.where, condition] });
+  where<K extends keyof T['columns'] & string, O extends Op>(key: K, op: O, value: ValueFor<T['columns'][K]['output'], O>): QueryBuilder<T>;
+  where(expr: Expr<T['columns']>): QueryBuilder<T>;
+  where(...args: [string, Op, unknown] | [ExprNode]) {
+    const node = args.length === 1 ? args[0] : { key: args[0], op: args[1], value: args[2] };
+    return new QueryBuilder({ ...this.query, where: [...this.query.where, toCondition(this.query.table, node)] });
   }
 
   orderBy(keys: (keyof T['columns'] & string | [keyof T['columns'] & string, Direction])[]) {
@@ -605,6 +638,7 @@ export {
   type Column,
   type ColumnProps,
   type Dialect,
+  type Expr,
   type IDatabase,
   type ILogger,
   type Migration,
@@ -616,6 +650,7 @@ export {
   create,
   defineMigrations,
   defineTable as table,
+  expr,
   from,
   into,
   types as t,

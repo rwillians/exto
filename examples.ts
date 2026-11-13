@@ -1,4 +1,4 @@
-import { column, create, defineMigrations, from, into, table } from './src';
+import { column, create, defineMigrations, expr, from, into, table } from './src';
 import * as sqlite from './src/bun-sqlite';
 import { z } from 'zod/v4';
 
@@ -153,6 +153,23 @@ const c6: boolean = await from(tasks)
   .where('scheduledAt', '<', new Date()) // all `.where` params become ANDed together
   .exists(db);
 
+const c7: boolean = await from(tasks)
+  .where(expr.and([
+    expr('status', '=', 'scheduled'),
+    expr('scheduledAt', '<', new Date())
+  ])) // different syntax but same thing as c6
+  .exists(db);
+
+const c8: boolean = await from(tasks)
+  .where(expr.or([
+    expr.and([
+      expr('status', '=', 'scheduled'),
+      expr('scheduledAt', '<', new Date())
+    ]),
+    expr('status', '=', 'queued'),
+  ]))
+  .exists(db);
+
 // ─── updates ─────────────────────────────────────────────────────────────────
 
 const d1: Task[] = await from(tasks)
@@ -196,22 +213,22 @@ const d5: undefined = await from(tasks)
 
 // ─── deletes ─────────────────────────────────────────────────────────────────
 
-const e1: undefined = await from(tasks.as('t'))
+const e1: undefined = await from(tasks)
   .where('status', '=', 'succeeded')
   .delete(db);
 
-const e2: undefined = await from(tasks.as('t'))
+const e2: undefined = await from(tasks)
   .where('status', '=', 'succeeded')
   .delete(db, { returning: false });
 
-const e3: Task[] = await from(tasks.as('t'))
+const e3: Task[] = await from(tasks)
   .where('status', '=', 'succeeded')
   .delete(db, { returning: true });
 
-const e4: Pick<Task, 'id'>[] = await from(tasks.as('t'))
+const e4: Pick<Task, 'id'>[] = await from(tasks)
   .where('status', '=', 'succeeded')
   .delete(db, { returning: ['id'] });
 
-const e5: {}[] = await from(tasks.as('t'))
+const e5: {}[] = await from(tasks)
   .where('status', '=', 'succeeded')
   .delete(db, { returning: [] });
