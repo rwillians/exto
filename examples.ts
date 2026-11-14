@@ -1,4 +1,4 @@
-import { column, create, defineMigrations, expr, from, into, table } from './src';
+import { column, create, defineMigrations, expr, from, into, table, type Infer } from './src';
 import * as sqlite from './src/bun-sqlite';
 import { z } from 'zod/v4';
 
@@ -10,9 +10,9 @@ const tc = {
 
 // ─── schema ──────────────────────────────────────────────────────────────────
 
-type Task = typeof tasks.infer;
-type TaskInsert = typeof tasks.inferForInsert;
-type TaskUpdate = typeof tasks.inferForUpdate;
+type Task = Infer<'select', typeof tasks>;
+type TaskInsert = Infer<'insert', typeof tasks>;
+type TaskUpdate = Infer<'update', typeof tasks>;
 
 const tasks = table('tasks', t => ({
   id: t.uuid().generated().primaryKey(),
@@ -26,9 +26,9 @@ const tasks = table('tasks', t => ({
   scheduledAt: t.datetime(),
 }));
 
-type User = typeof users.infer;
-type UserInsert = typeof users.inferForInsert;
-type UserUpdate = typeof users.inferForUpdate;
+type User = Infer<'select', typeof users>;
+type UserInsert = Infer<'insert', typeof users>;
+type UserUpdate = Infer<'update', typeof users>;
 
 const users = table('users', t => ({
   id: t.uuid().generated().primaryKey(),
@@ -258,6 +258,6 @@ const h1 = await from(t0)
   .where(t0.status, '=', 'scheduled')
   .all(db);
 
-const h2 = await from(t0)
-  .where(t0.attempts, '=', t0.maxAttempts)
+const h2 = await from(tasks)
+  .where(tasks.attempts, '=', tasks.maxAttempts)
   .all(db);

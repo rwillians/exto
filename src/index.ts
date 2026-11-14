@@ -1,6 +1,6 @@
 import * as std from './standard-schema';
 import { ValidationError } from './standard-schema';
-import { type CamelCase, type Expand, camelCase, snakeCase, wrap } from './utils';
+import { type CamelCase, type Expand, camelCase, raise, snakeCase, wrap } from './utils';
 
 // ─── columns ─────────────────────────────────────────────────────────────────
 
@@ -102,14 +102,10 @@ const types = {
 
 type Columns = Record<string, Column>;
 
-type Table<N extends string = string, C extends Columns = Columns> = {
-  name: N;
-  columns: C;
-};
-
-const TABLE = Symbol('exto.table');
+const NAME = Symbol('exto.name');
 const ALIAS = Symbol('exto.alias');
 const REF = Symbol('exto.ref');
+declare const COLUMNS: unique symbol;
 
 type ColumnRef<A extends string = string, C extends Column = Column> = {
   readonly [REF]: true;
@@ -117,31 +113,44 @@ type ColumnRef<A extends string = string, C extends Column = Column> = {
   readonly col: C;
 };
 
-// an aliased table is shaped like its columns, each one a reference to that
-// column under the alias; the table and the alias are non-enumerable symbols,
-// so spreading it copies only the column references
-type Aliased<A extends string = string, T extends Table = Table> = {
-  [K in keyof T['columns']]: ColumnRef<A, T['columns'][K]>;
-} & {
-  readonly [TABLE]: T;
+// a table is shaped like its columns: each enumerable property references a
+// column under the table's alias, which is its name unless `as` says
+// otherwise. The name and alias are symbols and `as` is non-enumerable, so
+// spreading a table copies only its column references
+type Table<N extends string = string, A extends string = string, C extends Columns = Columns> = {
+  readonly [NAME]: N;
   readonly [ALIAS]: A;
+  readonly [COLUMNS]: C; // type only
 };
+
+type ColumnsOf<T extends Table> = T[typeof COLUMNS];
 
 const isRef = (value: unknown): value is ColumnRef => typeof value === 'object' && value !== null && REF in value;
 
-const aliasTable = <A extends string, T extends Table>(table: T, alias: A) => {
-  const aliased = Object.fromEntries(Object.values(table.columns).map(col => [col.key, { [REF]: true, alias, col }]));
-  Object.defineProperty(aliased, TABLE, { value: table });
-  Object.defineProperty(aliased, ALIAS, { value: alias });
-  return aliased as Aliased<A, T>;
+const tableOf = (name: string, alias: string, columns: Column[]): Table => Object.defineProperties(
+  Object.fromEntries(columns.map(col => [col.key, { [REF]: true, alias, col }])),
+  {
+    [NAME]: { value: name },
+    [ALIAS]: { value: alias },
+    as: { value: (alias: string) => tableOf(name, alias, columns) },
+  },
+) as unknown as Table;
+
+const refOf = (table: Table, key: string) => {
+  const value = (table as unknown as Record<string, unknown>)[key];
+  return isRef(value) ? value : undefined;
 };
+
+const columnOf = (table: Table, key: string) => refOf(table, key)?.col ?? raise(`Unknown column "${key}" in table "${table[NAME]}"`);
+
+const columnsOf = (table: Table) => (Object.values(table) as ColumnRef[]).map(ref => ref.col);
 
 type OmitOnInsert = { generated: true };
 type OptionalOnInsert = { default: unknown } | { nullable: true };
 type OmitOnUpdate = { generated: true } | { primaryKey: true };
 type NumericType = 'BIGINT' | 'DECIMAL' | 'FLOAT' | 'INTEGER';
 
-type Infer<C extends Columns> = Expand<{
+type InferForSelect<C extends Columns> = Expand<{
   [K in keyof C]: C[K]['output'];
 }>;
 
@@ -155,39 +164,43 @@ type InferForUpdate<C extends Columns> = Expand<{
   [K in keyof C as C[K] extends OmitOnUpdate ? never : K]?: C[K]['input'];
 }>;
 
+// a table's row (`select`), what `.values()` takes (`insert`), and what `set`
+// takes (`update`)
+type Infer<M extends 'select' | 'insert' | 'update', T extends Table> = {
+  select: InferForSelect<ColumnsOf<T>>;
+  insert: InferForInsert<ColumnsOf<T>>;
+  update: InferForUpdate<ColumnsOf<T>>;
+}[M];
+
 type NumericKeys<C extends Columns> = {
   [K in keyof C]: C[K] extends OmitOnUpdate ? never : C[K]['type'] extends NumericType ? K : never;
 }[keyof C];
 
-type DefinedTable<N extends string, C extends Columns> = Table<N, C> & {
-  as: <A extends string>(alias: A) => Aliased<A, DefinedTable<N, C>>;
-  infer: Infer<C>;                   // type only
-  inferForInsert: InferForInsert<C>; // type only
-  inferForUpdate: InferForUpdate<C>; // type only
+type DefinedTable<N extends string, A extends string, C extends Columns> = Table<N, A, C> & {
+  readonly [K in keyof C]: ColumnRef<A, C[K]>;
+} & {
+  as: <B extends string>(alias: B) => DefinedTable<N, B, C>;
 };
+
+// `as` aliases the table
+const RESERVED = ['as'] as const;
+
+type Reserved<S> = { [K in keyof S & string as CamelCase<K> extends typeof RESERVED[number] ? K : never]: never };
 
 const defineTable = <
   N extends string,
   S extends Record<string, ColumnBuilder<ColumnProps>>,
->(name: N, shapeFn: (t: typeof types) => S) => {
-  const columns = Object.fromEntries(
-    Object
-      .entries(shapeFn(types))
-      .map(([key, { props }]) => [camelCase(key), { ...props, key: camelCase(key), name: snakeCase(camelCase(key)) }] as const),
-  );
+>(name: N, shapeFn: (t: typeof types) => S & NoInfer<Reserved<S>>) => {
+  const columns = Object
+    .entries(shapeFn(types))
+    .map(([key, { props }]) => ({ ...props, key: camelCase(key), name: snakeCase(camelCase(key)) }) as Column);
 
-  const table = { name, columns } as unknown as Table;
-  const as = (alias: string) => aliasTable(table, alias);
+  const reserved = columns.find(col => (RESERVED as readonly string[]).includes(col.key));
+  if (reserved) throw new Error(`"${reserved.key}" is reserved, it can't be a column of table "${name}"`);
 
-  return Object.assign(table, { as }) as unknown as DefinedTable<N, {
+  return tableOf(name, name, columns) as unknown as DefinedTable<N, N, {
     [K in keyof S & string as CamelCase<K>]: Column<CamelCase<K>, S[K]['props']>;
   }>;
-};
-
-const columnOf = (table: Table, key: string) => {
-  const col = table.columns[key];
-  if (!col) throw new Error(`Unknown column "${key}" in table "${table.name}"`);
-  return col;
 };
 
 // ─── adapter contract ────────────────────────────────────────────────────────
@@ -308,7 +321,7 @@ const runReturning = async (db: IDatabase, b: SqlBuilder, table: Table, returnin
   }
 
   const cols = returning === true
-    ? Object.values(table.columns)
+    ? columnsOf(table)
     : returning.map(key => columnOf(table, key));
 
   // an empty RETURNING isn't valid SQL, but it still takes one to know how
@@ -347,7 +360,6 @@ type ExprNode =
   | { lhs: string | ColumnRef; op: Op; value: unknown }
   | { group: 'AND' | 'OR'; exprs: ExprNode[] };
 
-declare const COLUMNS: unique symbol;
 declare const ALIASES: unique symbol;
 
 // both are type-only: `.where` infers the columns back into `expr`'s
@@ -374,18 +386,16 @@ type Condition =
   | { col: Column; op: Op; value: unknown; rhs?: Column }
   | { group: 'AND' | 'OR'; conditions: Condition[] };
 
-type Scope = { table: Table; alias: string };
-
 // plain keys belong to the query's table; references must be to its alias
-const columnIn = ({ table, alias }: Scope, field: string | ColumnRef) => {
+const columnIn = (table: Table, field: string | ColumnRef) => {
   if (typeof field === 'string') return columnOf(table, field);
-  if (field.alias !== alias || table.columns[field.col.key] !== field.col) throw new Error(`"${field.alias}.${field.col.key}" isn't part of the query`);
+  if (field.alias !== table[ALIAS] || refOf(table, field.col.key)?.col !== field.col) throw new Error(`"${field.alias}.${field.col.key}" isn't part of the query`);
   return field.col;
 };
 
-const toCondition = (scope: Scope, node: ExprNode): Condition => 'group' in node
-  ? { group: node.group, conditions: node.exprs.map(expr => toCondition(scope, expr)) }
-  : { col: columnIn(scope, node.lhs), op: node.op, value: node.value, rhs: isRef(node.value) ? columnIn(scope, node.value) : undefined };
+const toCondition = (table: Table, node: ExprNode): Condition => 'group' in node
+  ? { group: node.group, conditions: node.exprs.map(expr => toCondition(table, expr)) }
+  : { col: columnIn(table, node.lhs), op: node.op, value: node.value, rhs: isRef(node.value) ? columnIn(table, node.value) : undefined };
 
 const renderCondition = (b: SqlBuilder, qualifier?: string) => (condition: Condition): SqlBuilder => {
   if ('group' in condition) {
@@ -422,7 +432,7 @@ type Changes<C extends Columns> = {
 type Assignment = { col: Column; op: 'set' | 'inc' | 'replace'; value?: unknown };
 
 const parseChanges = (table: Table, { set = {}, inc = {}, replace = [] }: { set?: Row; inc?: Row; replace?: string[] }) => {
-  const updatable = Object.values(table.columns).filter(col => !col.generated && !col.primaryKey);
+  const updatable = columnsOf(table).filter(col => !col.generated && !col.primaryKey);
   const numeric = updatable.filter(col => ['BIGINT', 'DECIMAL', 'FLOAT', 'INTEGER'].includes(col.type));
 
   const sets = std.parseOrThrow(std.strictObject(Object.fromEntries(updatable.map(col => [col.key, std.optional(col.schema)]))), set);
@@ -430,7 +440,7 @@ const parseChanges = (table: Table, { set = {}, inc = {}, replace = [] }: { set?
 
   const replaced = replace.map(key => {
     const col = updatable.find(col => col.key === key);
-    if (!col) throw new Error(`Cannot replace "${key}": it's not an updatable field of "${table.name}"`);
+    if (!col) throw new Error(`Cannot replace "${key}": it's not an updatable field of "${table[NAME]}"`);
     return col;
   });
 
@@ -481,19 +491,19 @@ const resolveInsertValue = (col: Column, row: Row) => {
 
 class InsertBuilder<T extends Table> {
   constructor(private readonly table: T,
-              private readonly rows: InferForInsert<T['columns']>[] = []) { }
+              private readonly rows: InferForInsert<ColumnsOf<T>>[] = []) { }
 
-  values(rows: InferForInsert<T['columns']> | InferForInsert<T['columns']>[]) {
+  values(rows: InferForInsert<ColumnsOf<T>> | InferForInsert<ColumnsOf<T>>[]) {
     return new InsertBuilder(this.table, [...this.rows, ...wrap(rows)]);
   }
 
-  insert(db: IDatabase, options?: InsertOptions<T['columns']> & { returning?: true }): Promise<Infer<T['columns']>[]>;
-  insert(db: IDatabase, options: InsertOptions<T['columns']> & { returning: false }): Promise<undefined>;
-  insert<K extends keyof T['columns'] & string>(db: IDatabase, options: InsertOptions<T['columns']> & { returning: K[] }): Promise<Expand<Pick<Infer<T['columns']>, K>>[]>;
+  insert(db: IDatabase, options?: InsertOptions<ColumnsOf<T>> & { returning?: true }): Promise<InferForSelect<ColumnsOf<T>>[]>;
+  insert(db: IDatabase, options: InsertOptions<ColumnsOf<T>> & { returning: false }): Promise<undefined>;
+  insert<K extends keyof ColumnsOf<T> & string>(db: IDatabase, options: InsertOptions<ColumnsOf<T>> & { returning: K[] }): Promise<Expand<Pick<InferForSelect<ColumnsOf<T>>, K>>[]>;
   async insert(db: IDatabase, { returning = true, conflict }: { returning?: Returning, conflict?: { on: string[], do: 'nothing' | 'throw' | Row } } = {}) {
     if (this.rows.length === 0) return returning === false ? undefined : [];
 
-    const cols = Object.values(this.table.columns);
+    const cols = columnsOf(this.table);
     const insertable = cols.filter(col => !col.generated || isGeneratedByClient(db.dialect, col));
     const schema = std.array(std.strictObject(Object.fromEntries(insertable.map(col => [col.key, col.schema]))));
 
@@ -503,7 +513,7 @@ class InsertBuilder<T extends Table> {
     })));
 
     const b = new SqlBuilder(db.dialect)
-      .push('INSERT INTO ', quote(this.table.name), ' (', insertable.map(col => quote(col.name)).join(', '), ') VALUES ');
+      .push('INSERT INTO ', quote(this.table[NAME]), ' (', insertable.map(col => quote(col.name)).join(', '), ') VALUES ');
 
     b.join(rows, ', ', row => b
       .push('(')
@@ -525,7 +535,7 @@ class InsertBuilder<T extends Table> {
     const assignments = parseChanges(this.table, conflict.do);
     if (assignments.length === 0) throw new Error('Nothing to update on conflict: `set`, `inc` and `replace` are empty');
 
-    return renderAssignments(b.push(' DO UPDATE SET '), assignments, this.table.name);
+    return renderAssignments(b.push(' DO UPDATE SET '), assignments, this.table[NAME]);
   }
 }
 
@@ -537,7 +547,6 @@ type Direction = 'ASC' | 'DESC';
 
 type Query<T extends Table> = {
   table: T;
-  alias: string;
   select?: string[];
   where: Condition[];
   orderBy: [Column, Direction][];
@@ -545,31 +554,31 @@ type Query<T extends Table> = {
   offset?: number;
 };
 
-type Keys<T extends Table> = keyof T['columns'] & string;
+type Keys<T extends Table> = keyof ColumnsOf<T> & string;
 
 type OrderKey<T extends Table, A extends string> = Keys<T> | ColumnRef<A>;
 
 // `A` is the query's alias, and `S` holds the selected fields, every field
 // unless `select` says otherwise
-class QueryBuilder<T extends Table, A extends string = T['name'], S extends Keys<T> = Keys<T>> {
+class QueryBuilder<T extends Table, A extends string = T[typeof ALIAS], S extends Keys<T> = Keys<T>> {
   constructor(private readonly query: Query<T>) { }
 
   select<K extends Keys<T>>(keys: K[]) {
     return new QueryBuilder<T, A, K>({ ...this.query, select: keys });
   }
 
-  where<K extends Keys<T>, O extends Op>(key: K, op: O, value: ValueFor<T['columns'][K]['output'], O>): QueryBuilder<T, A, S>;
+  where<K extends Keys<T>, O extends Op>(key: K, op: O, value: ValueFor<ColumnsOf<T>[K]['output'], O>): QueryBuilder<T, A, S>;
   where<R extends ColumnRef<A>, O extends Op>(lhs: R, op: O, rhs: RhsFor<R['col']['output'], O, A>): QueryBuilder<T, A, S>;
-  where(expr: Expr<T['columns'], A>): QueryBuilder<T, A, S>;
+  where(expr: Expr<ColumnsOf<T>, A>): QueryBuilder<T, A, S>;
   where(...args: [string | ColumnRef, Op, unknown] | [ExprNode]) {
     const node = args.length === 1 ? args[0] : { lhs: args[0], op: args[1], value: args[2] };
-    return new QueryBuilder<T, A, S>({ ...this.query, where: [...this.query.where, toCondition(this.query, node)] });
+    return new QueryBuilder<T, A, S>({ ...this.query, where: [...this.query.where, toCondition(this.query.table, node)] });
   }
 
   orderBy(keys: (OrderKey<T, A> | [OrderKey<T, A>, Direction])[]) {
     const orderBy = keys.map(key => Array.isArray(key)
-      ? [columnIn(this.query, key[0]), key[1]] as [Column, Direction]
-      : [columnIn(this.query, key), 'ASC'] as [Column, Direction]);
+      ? [columnIn(this.query.table, key[0]), key[1]] as [Column, Direction]
+      : [columnIn(this.query.table, key), 'ASC'] as [Column, Direction]);
 
     return new QueryBuilder<T, A, S>({ ...this.query, orderBy: [...this.query.orderBy, ...orderBy] });
   }
@@ -586,10 +595,10 @@ class QueryBuilder<T extends Table, A extends string = T['name'], S extends Keys
     const { table, select } = this.query;
     const cols = select
       ? select.map(key => columnOf(table, key))
-      : Object.values(table.columns);
+      : columnsOf(table);
 
     const rows = await run(db, this.renderSelect(new SqlBuilder(db.dialect), cols).build());
-    return rows.map(decoder(db.dialect, cols)) as Expand<Pick<Infer<T['columns']>, S>>[];
+    return rows.map(decoder(db.dialect, cols)) as Expand<Pick<InferForSelect<ColumnsOf<T>>, S>>[];
   }
 
   async one(db: IDatabase) {
@@ -611,17 +620,17 @@ class QueryBuilder<T extends Table, A extends string = T['name'], S extends Keys
     return Number(row!['count']);
   }
 
-  update(db: IDatabase, changes: Changes<T['columns']> & { returning: false }): Promise<undefined>;
-  update<K extends keyof T['columns'] & string>(db: IDatabase, changes: Changes<T['columns']> & { returning: K[] }): Promise<Expand<Pick<Infer<T['columns']>, K>>[]>;
-  update(db: IDatabase, changes: Changes<T['columns']> & { returning?: true }): Promise<Infer<T['columns']>[]>;
-  async update(db: IDatabase, { returning = true, ...changes }: Changes<T['columns']> & { returning?: Returning }) {
+  update(db: IDatabase, changes: Changes<ColumnsOf<T>> & { returning: false }): Promise<undefined>;
+  update<K extends keyof ColumnsOf<T> & string>(db: IDatabase, changes: Changes<ColumnsOf<T>> & { returning: K[] }): Promise<Expand<Pick<InferForSelect<ColumnsOf<T>>, K>>[]>;
+  update(db: IDatabase, changes: Changes<ColumnsOf<T>> & { returning?: true }): Promise<InferForSelect<ColumnsOf<T>>[]>;
+  async update(db: IDatabase, { returning = true, ...changes }: Changes<ColumnsOf<T>> & { returning?: Returning }) {
     this.assertUnbounded('update');
 
     const { table, where } = this.query;
     const assignments = parseChanges(table, changes);
     if (assignments.length === 0) throw new Error('Nothing to update: both `set` and `inc` are empty');
 
-    const b = new SqlBuilder(db.dialect).push('UPDATE ', quote(table.name), ' SET ');
+    const b = new SqlBuilder(db.dialect).push('UPDATE ', quote(table[NAME]), ' SET ');
 
     renderAssignments(b, assignments);
     renderWhere(b, where);
@@ -629,14 +638,14 @@ class QueryBuilder<T extends Table, A extends string = T['name'], S extends Keys
     return await runReturning(db, b, table, returning);
   }
 
-  delete(db: IDatabase, options: { returning: true }): Promise<Infer<T['columns']>[]>;
-  delete<K extends keyof T['columns'] & string>(db: IDatabase, options: { returning: K[] }): Promise<Expand<Pick<Infer<T['columns']>, K>>[]>;
+  delete(db: IDatabase, options: { returning: true }): Promise<InferForSelect<ColumnsOf<T>>[]>;
+  delete<K extends keyof ColumnsOf<T> & string>(db: IDatabase, options: { returning: K[] }): Promise<Expand<Pick<InferForSelect<ColumnsOf<T>>, K>>[]>;
   delete(db: IDatabase, options?: { returning?: false }): Promise<undefined>;
   async delete(db: IDatabase, { returning = false }: { returning?: Returning } = {}) {
     this.assertUnbounded('delete');
 
     const { table, where } = this.query;
-    const b = new SqlBuilder(db.dialect).push('DELETE FROM ', quote(table.name));
+    const b = new SqlBuilder(db.dialect).push('DELETE FROM ', quote(table[NAME]));
 
     renderWhere(b, where);
 
@@ -644,7 +653,8 @@ class QueryBuilder<T extends Table, A extends string = T['name'], S extends Keys
   }
 
   private renderSelect(b: SqlBuilder, cols: Column[]) {
-    const { table, alias, where, orderBy, limit, offset } = this.query;
+    const { table, where, orderBy, limit, offset } = this.query;
+    const alias = table[ALIAS];
 
     b.push('SELECT ');
 
@@ -653,7 +663,7 @@ class QueryBuilder<T extends Table, A extends string = T['name'], S extends Keys
     if (cols.length === 0) b.push('1');
     else b.join(cols, ', ', col => b.push(ref(col, alias), ' AS ', quote(col.key)));
 
-    b.push(' FROM ', quote(table.name), ' AS ', quote(alias));
+    b.push(' FROM ', quote(table[NAME]), ' AS ', quote(alias));
 
     renderWhere(b, where, alias);
     if (orderBy.length > 0) b.push(' ORDER BY ').join(orderBy, ', ', ([col, dir]) => b.push(ref(col, alias), ' ', dir));
@@ -680,15 +690,7 @@ class QueryBuilder<T extends Table, A extends string = T['name'], S extends Keys
   }
 }
 
-function from<T extends Table>(table: T): QueryBuilder<T>;
-function from<A extends string, T extends Table>(aliased: Aliased<A, T>): QueryBuilder<T, A>;
-function from(source: Table | Aliased) {
-  const { table, alias } = TABLE in source
-    ? { table: source[TABLE], alias: source[ALIAS] }
-    : { table: source as Table, alias: (source as Table).name };
-
-  return new QueryBuilder({ table, alias, where: [], orderBy: [] });
-}
+const from = <T extends Table>(table: T) => new QueryBuilder<T>({ table, where: [], orderBy: [] });
 
 // ─── ddl ─────────────────────────────────────────────────────────────────────
 
@@ -703,15 +705,15 @@ const renderColumnDefinition = (dialect: Dialect, col: Column) => [
 
 type IndexOptions = { ifNotExists?: boolean, name?: string };
 
-const createIndex = <T extends Table>(table: T, keys: (keyof T['columns'] & string)[], {
+const createIndex = <T extends Table>(table: T, keys: (keyof ColumnsOf<T> & string)[], {
   ifNotExists = false,
   name,
   unique = false,
 }: IndexOptions & { unique?: boolean } = {}) => ({
   onto: async (db: IDatabase) => {
     const cols = keys.map(key => columnOf(table, key).name);
-    const index = name ?? `${table.name}_${cols.join('_')}_index`;
-    const sql = `CREATE ${unique ? 'UNIQUE ' : ''}INDEX ${ifNotExists ? 'IF NOT EXISTS ' : ''}${quote(index)} ON ${quote(table.name)} (${cols.map(quote).join(', ')})`;
+    const index = name ?? `${table[NAME]}_${cols.join('_')}_index`;
+    const sql = `CREATE ${unique ? 'UNIQUE ' : ''}INDEX ${ifNotExists ? 'IF NOT EXISTS ' : ''}${quote(index)} ON ${quote(table[NAME])} (${cols.map(quote).join(', ')})`;
     await run(db, { sql, params: [] });
   },
 });
@@ -719,13 +721,13 @@ const createIndex = <T extends Table>(table: T, keys: (keyof T['columns'] & stri
 const create = {
   table: (table: Table, { ifNotExists = false }: { ifNotExists?: boolean } = {}) => ({
     onto: async (db: IDatabase) => {
-      const cols = Object.values(table.columns).map(col => renderColumnDefinition(db.dialect, col));
-      const sql = `CREATE TABLE ${ifNotExists ? 'IF NOT EXISTS ' : ''}${quote(table.name)} (${cols.join(', ')})`;
+      const cols = columnsOf(table).map(col => renderColumnDefinition(db.dialect, col));
+      const sql = `CREATE TABLE ${ifNotExists ? 'IF NOT EXISTS ' : ''}${quote(table[NAME])} (${cols.join(', ')})`;
       await run(db, { sql, params: [] });
     },
   }),
   index: createIndex,
-  uniqueIndex: <T extends Table>(table: T, keys: (keyof T['columns'] & string)[], options: IndexOptions = {}) =>
+  uniqueIndex: <T extends Table>(table: T, keys: (keyof ColumnsOf<T> & string)[], options: IndexOptions = {}) =>
     createIndex(table, keys, { ...options, unique: true }),
 };
 
@@ -754,7 +756,6 @@ const defineMigrations = (migrations: Record<string, Migration>) => async (db: I
 };
 
 export {
-  type Aliased,
   type Codec,
   type Column,
   type ColumnProps,
@@ -764,6 +765,7 @@ export {
   type Expr,
   type IDatabase,
   type ILogger,
+  type Infer,
   type Migration,
   type Primitive,
   type Row,

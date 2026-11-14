@@ -1,5 +1,5 @@
 // type-level assertions, checked by `bun check` (never executed)
-import { create, expr, from, into, t, type IDatabase } from '../src';
+import { create, expr, from, into, t, type IDatabase, type Infer } from '../src';
 import { tasks, things } from './fixtures';
 
 type Equals<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
@@ -7,7 +7,7 @@ const assert = <_ extends true>() => { };
 
 type Status = 'scheduled' | 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled';
 
-assert<Equals<typeof tasks.infer, {
+assert<Equals<Infer<'select', typeof tasks>, {
   id: string;
   parentId: string | null;
   status: Status;
@@ -18,7 +18,7 @@ assert<Equals<typeof tasks.infer, {
   scheduledAt: Date;
 }>>();
 
-assert<Equals<typeof tasks.inferForInsert, {
+assert<Equals<Infer<'insert', typeof tasks>, {
   status: Status;
   type: string;
   payload: Record<string, any>;
@@ -28,7 +28,13 @@ assert<Equals<typeof tasks.inferForInsert, {
   createdAt?: string | number | Date;
 }>>();
 
-assert<Equals<keyof typeof tasks.inferForUpdate, 'parentId' | 'status' | 'type' | 'payload' | 'attempts' | 'createdAt' | 'scheduledAt'>>();
+assert<Equals<keyof Infer<'update', typeof tasks>, 'parentId' | 'status' | 'type' | 'payload' | 'attempts' | 'createdAt' | 'scheduledAt'>>();
+
+// a table's string keys are its columns, plus `as`
+assert<Equals<Exclude<keyof typeof tasks, symbol>, 'as' | keyof Infer<'select', typeof tasks>>>();
+
+// @ts-expect-error inferred types live in `Infer`, not on the table
+tasks.infer;
 
 export const checks = async (db: IDatabase) => {
   const picked = await from(tasks).select(['id', 'type']).all(db);
@@ -38,10 +44,10 @@ export const checks = async (db: IDatabase) => {
   assert<Equals<typeof pickedNone, {}[]>>();
 
   const all = await from(tasks).where('status', '=', 'queued').all(db);
-  assert<Equals<typeof all, typeof tasks.infer[]>>();
+  assert<Equals<typeof all, Infer<'select', typeof tasks>[]>>();
 
   const one = await from(tasks).where('status', '=', 'queued').one(db);
-  assert<Equals<typeof one, typeof tasks.infer | null>>();
+  assert<Equals<typeof one, Infer<'select', typeof tasks> | null>>();
 
   const pickedOne = await from(tasks).select(['id']).where('status', '=', 'queued').orderBy(['createdAt']).one(db);
   assert<Equals<typeof pickedOne, { id: string } | null>>();
@@ -60,10 +66,10 @@ export const checks = async (db: IDatabase) => {
   const row = { status: 'queued', type: 'a', payload: {}, scheduledAt: new Date() } as const;
 
   const inserted = await into(tasks).values(row).insert(db);
-  assert<Equals<typeof inserted, typeof tasks.infer[]>>();
+  assert<Equals<typeof inserted, Infer<'select', typeof tasks>[]>>();
 
   const insertedAll = await into(tasks).values(row).insert(db, { returning: true });
-  assert<Equals<typeof insertedAll, typeof tasks.infer[]>>();
+  assert<Equals<typeof insertedAll, Infer<'select', typeof tasks>[]>>();
 
   const insertedIds = await into(tasks).values(row).insert(db, { returning: ['id'] });
   assert<Equals<typeof insertedIds, { id: string }[]>>();
@@ -78,7 +84,7 @@ export const checks = async (db: IDatabase) => {
   into(tasks).values(row).insert(db, { returning: ['scheduled_at'] });
 
   const upserted = await into(tasks).values(row).insert(db, { conflict: { on: ['id'], do: { set: { type: 'b' }, inc: { attempts: 1 }, replace: ['status'] } } });
-  assert<Equals<typeof upserted, typeof tasks.infer[]>>();
+  assert<Equals<typeof upserted, Infer<'select', typeof tasks>[]>>();
 
   const upsertedIds = await into(tasks).values(row).insert(db, { conflict: { on: ['id'], do: 'nothing' }, returning: ['id'] });
   assert<Equals<typeof upsertedIds, { id: string }[]>>();
@@ -93,10 +99,10 @@ export const checks = async (db: IDatabase) => {
   into(tasks).values(row).insert(db, { conflict: { on: ['id'], do: { inc: { type: 1 } } } });
 
   const updated = await from(tasks).update(db, { set: { status: 'running' } });
-  assert<Equals<typeof updated, typeof tasks.infer[]>>();
+  assert<Equals<typeof updated, Infer<'select', typeof tasks>[]>>();
 
   const updatedAll = await from(tasks).update(db, { set: { status: 'running' }, returning: true });
-  assert<Equals<typeof updatedAll, typeof tasks.infer[]>>();
+  assert<Equals<typeof updatedAll, Infer<'select', typeof tasks>[]>>();
 
   const updatedIds = await from(tasks).update(db, { set: { status: 'running' }, returning: ['id'] });
   assert<Equals<typeof updatedIds, { id: string }[]>>();
@@ -111,7 +117,7 @@ export const checks = async (db: IDatabase) => {
   assert<Equals<typeof deletedNothing, undefined>>();
 
   const deleted = await from(tasks).delete(db, { returning: true });
-  assert<Equals<typeof deleted, typeof tasks.infer[]>>();
+  assert<Equals<typeof deleted, Infer<'select', typeof tasks>[]>>();
 
   const deletedIds = await from(tasks).delete(db, { returning: ['id'] });
   assert<Equals<typeof deletedIds, { id: string }[]>>();
@@ -163,7 +169,7 @@ export const checks = async (db: IDatabase) => {
   // @ts-expect-error index columns use field keys, not column names
   create.index(tasks, ['scheduled_at']);
 
-  assert<Equals<typeof things.infer['huge'], bigint | null>>();
+  assert<Equals<Infer<'select', typeof things>['huge'], bigint | null>>();
 
   // @ts-expect-error decimals can't have a scale without a precision
   t.decimal({ scale: 2 });
@@ -178,7 +184,16 @@ export const checks = async (db: IDatabase) => {
   const t1 = tasks.as('t1');
 
   const aliased = await from(t0).where(t0.status, '=', 'queued').where(t0.createdAt, '<', t0.scheduledAt).all(db);
-  assert<Equals<typeof aliased, typeof tasks.infer[]>>();
+  assert<Equals<typeof aliased, Infer<'select', typeof tasks>[]>>();
+
+  const compared = await from(tasks).where(tasks.createdAt, '<', tasks.scheduledAt).where(expr(tasks.id, '!=', tasks.parentId)).orderBy([tasks.createdAt]).all(db);
+  assert<Equals<typeof compared, Infer<'select', typeof tasks>[]>>();
+
+  const insertedAliased = await into(t0).values(row).insert(db);
+  assert<Equals<typeof insertedAliased, Infer<'select', typeof tasks>[]>>();
+
+  const realiased = tasks.as('t0').as('t1');
+  assert<Equals<typeof realiased.id.alias, 't1'>>();
 
   const aliasedIds = await from(t0).where('status', '=', 'queued').select(['id']).one(db);
   assert<Equals<typeof aliasedIds, { id: string } | null>>();

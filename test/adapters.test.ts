@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
-import { ValidationError, create, exec, expr, from, into, type IDatabase } from '../src';
+import { ValidationError, create, exec, expr, from, into, type ColumnRef, type IDatabase } from '../src';
 import * as pg from '../src/bun-postgres';
 import * as sqlite from '../src/bun-sqlite';
 import { migrate, tasks, things } from './fixtures';
@@ -91,6 +91,13 @@ for (const adapter of adapters) {
         expect(first!.payload).toEqual({ n: 1 });
         expect(third!.attempts).toBe(5);
         expect(third!.scheduledAt).toEqual(new Date('2099-01-01T00:00:00Z'));
+      });
+
+      test('inserts into an aliased table', async () => {
+        const [task] = await into(tasks.as('t')).values({ status: 'queued', type: 'x', payload: {}, scheduledAt: new Date() }).insert(db, { returning: ['type'] });
+
+        expect(task).toEqual({ type: 'x' });
+        expect(sqls.at(-1)).toStartWith('INSERT INTO "tasks" (');
       });
 
       test('generates uuid v7 ids client-side', async () => {
@@ -252,7 +259,7 @@ for (const adapter of adapters) {
           .insert(db, { conflict: { on: ['day', 'big'], do: { set: { flag: true }, inc: { amount: 0.5 } } } });
 
         // two rows' worth of params come before the ones in DO UPDATE
-        const n = 2 * Object.values(things.columns).filter(col => !('generated' in col)).length;
+        const n = 2 * (Object.values(things) as ColumnRef[]).map(ref => ref.col).filter(col => !('generated' in col)).length;
         expect(sqls.at(-1)).toContain(` DO UPDATE SET "flag" = ${db.dialect.placeholder(n + 1)}, "amount" = "things"."amount" + ${db.dialect.placeholder(n + 2)} RETURNING `);
         expect(upserted.map(thing => [thing.big, thing.body, thing.flag, thing.amount]).sort()).toEqual([[1, 'a', true, 1.5], [2, 'c', false, 1]]);
       });
@@ -395,12 +402,16 @@ for (const adapter of adapters) {
         expect(() => from(tasks).where(expr.or([expr('nope' as any, '=', 1)]))).toThrow();
       });
 
-      test('filters by aliased columns, against values or other columns', async () => {
+      test('filters by column references, against values or other columns', async () => {
         const [first, second, third] = await insertTasks();
         const p = (n: number) => db.dialect.placeholder(n);
-        const t = tasks.as('t');
 
         // only the third task is scheduled after it was created
+        expect(await from(tasks).where(tasks.createdAt, '<', tasks.scheduledAt).select(['id']).all(db)).toEqual([{ id: third!.id }]);
+        expect(sqls.at(-1)).toBe('SELECT "tasks"."id" AS "id" FROM "tasks" AS "tasks" WHERE "tasks"."created_at" < "tasks"."scheduled_at"');
+
+        const t = tasks.as('t');
+
         const rows = await from(t)
           .where(t.type, '=', 'Other')
           .where(t.createdAt, '<', t.scheduledAt)
@@ -466,13 +477,15 @@ for (const adapter of adapters) {
         expect(await from(tasks).where(expr.or([expr('type', '=', 'Other'), expr('parentId', 'is not', null)])).delete(db, { returning: ['type'] })).toEqual([{ type: 'Other' }]);
       });
 
-      test('filters by aliased columns', async () => {
+      test('filters by column references', async () => {
         const [, , third] = await insertTasks();
         const t = tasks.as('t');
         const query = from(t).where(t.createdAt, '<', t.scheduledAt);
 
-        expect(await query.update(db, { set: { status: 'running' }, returning: ['id'] })).toEqual([{ id: third!.id }]);
+        expect(await from(tasks).where(tasks.createdAt, '<', tasks.scheduledAt).update(db, { inc: { attempts: 1 }, returning: ['attempts'] })).toEqual([{ attempts: 6 }]);
         expect(sqls.at(-1)).toContain(' WHERE "created_at" < "scheduled_at" RETURNING ');
+
+        expect(await query.update(db, { set: { status: 'running' }, returning: ['id'] })).toEqual([{ id: third!.id }]);
         expect(await query.delete(db, { returning: ['status'] })).toEqual([{ status: 'running' }]);
         expect(sqls.at(-1)).toBe('DELETE FROM "tasks" WHERE "created_at" < "scheduled_at" RETURNING "status" AS "status"');
       });

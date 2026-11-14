@@ -46,7 +46,7 @@ bun add @rwillians/exto
 ## Tables
 
 ```ts
-import { table } from '@rwillians/exto';
+import { table, type Infer } from '@rwillians/exto';
 import { z } from 'zod';
 
 const tasks = table('tasks', t => ({
@@ -59,9 +59,9 @@ const tasks = table('tasks', t => ({
   scheduledAt: t.datetime(),
 }));
 
-type Task = typeof tasks.infer;                // a row
-type TaskInsert = typeof tasks.inferForInsert; // what `.values()` takes
-type TaskUpdate = typeof tasks.inferForUpdate; // what `set` takes
+type Task = Infer<'select', typeof tasks>;       // a row
+type TaskInsert = Infer<'insert', typeof tasks>; // what `.values()` takes
+type TaskUpdate = Infer<'update', typeof tasks>; // what `set` takes
 ```
 
 Keys are camelCase in TypeScript and snake_case in the database
@@ -254,26 +254,23 @@ await from(tasks)
 // WHERE ("status" = ? OR ("status" = ? AND "attempts" > ?))
 ```
 
-### Aliases
+### Column references
 
-An aliased table is shaped like its columns, so they can be referenced
-directly, and compared against each other:
+Tables are shaped like their columns, so a column can be referenced directly,
+and compared against another one:
 
 ```ts
-const t = tasks.as('t');
-
-await from(t)
-  .where(t.status, '=', 'queued')
-  .where(t.attempts, '<', t.maxAttempts)
-  .orderBy([t.scheduledAt])
+await from(tasks)
+  .where(tasks.status, '=', 'queued')
+  .where(tasks.attempts, '<', tasks.maxAttempts)
+  .orderBy([tasks.scheduledAt])
   .all(db);
-// SELECT ... FROM "tasks" AS "t"
-// WHERE "t"."status" = ? AND "t"."attempts" < "t"."max_attempts"
-// ORDER BY "t"."scheduled_at" ASC
+// WHERE "tasks"."status" = ? AND "tasks"."attempts" < "tasks"."max_attempts"
 ```
 
 Columns compare with `=`, `!=`, `<`, `<=`, `>` and `>=`, as long as their
-types match.
+types match. `tasks.as('t')` references the same columns under another alias
+(`FROM "tasks" AS "t"`), which is why `as` can't be a column's name.
 
 
 ## Update
