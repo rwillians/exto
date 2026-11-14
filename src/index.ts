@@ -442,6 +442,470 @@ const exec = async (db: IDatabase, sql: string, params: unknown[] = []) => {
   await run(db, { sql, params });
 };
 
+const renderTable = (b: SqlBuilder, table: Table) => table[ALIAS] === table[NAME]
+  ? b.push(quote(table[NAME]))
+  : b.push(quote(table[NAME]), ' AS ', quote(table[ALIAS]));
+
+// a nested field renders as an SQL value, unless it holds a JSON document
+// itself (a record, or embedded fields)
+const renderNode = (b: SqlBuilder, node: Node): SqlBuilder => {
+  switch (node.kind) {
+    case 'ref': {
+      const sql = `${quote(node.alias)}.${quote(node.col.name)}`;
+      if (node.path.length === 0) return b.push(sql);
+      return b.push(b.dialect.json(sql, node.path.map(field => field.name), node.path.at(-1)!.type !== 'JSON'));
+    }
+
+    case 'compare': {
+      const { lhs, op, rhs } = node;
+      renderNode(b, lhs).push(' ', op.toUpperCase(), ' ');
+      if (op === 'is' || op === 'is not') return b.push('NULL');
+      if (rhs.kind === 'value') return b.param(encodeFor(b.dialect, lhs, rhs.value));
+      return renderNode(b, rhs);
+    }
+
+    case 'group': {
+      const { op, nodes } = node;
+      if (nodes.length === 0) return b.push(op === 'AND' ? '1 = 1' : '1 = 0');
+      return b.push('(').join(nodes, ` ${op} `, node => renderNode(b, node)).push(')');
+    }
+
+    case 'fragment':
+      node.strings.forEach((str, i) => {
+        b.push(str);
+        if (i >= node.values.length) return;
+        const value = node.values[i];
+        if (isOperand(value)) renderNode(b, value[NODE]);
+        else b.param(value);
+      });
+      return b;
+
+    case 'call':
+      return node.fn === 'SUM'
+        ? renderNode(b.push('COALESCE(SUM('), node.arg).push('), 0)')
+        : renderNode(b.push('COUNT('), node.arg).push(')');
+  }
+};
+
+// values compared with a column are encoded the way the column stores them
+const encodeFor = (dialect: Dialect, node: Node, value: unknown) => {
+  if (node.kind !== 'ref') return value;
+  if (node.path.length === 0) return encode(dialect, node.col, value);
+
+  const leaf = node.path.at(-1)!;
+  return leaf.type === 'JSON' ? dialect.codecs.JSON.encode(toJson(leaf, value)) : toJson(leaf, value);
+};
+
+const decodeFor = (dialect: Dialect, node: Node) => (value: unknown) => {
+  if (node.kind === 'call') return Number(value ?? 0);
+  if (node.kind !== 'ref') return typeof value === 'bigint' ? Number(value) : value;
+  if (node.path.length === 0) return decode(dialect, node.col, value);
+
+  const leaf = node.path.at(-1)!;
+  if (value === null || value === undefined) return null;
+  return fromJson(leaf, leaf.type === 'JSON' ? dialect.codecs.JSON.decode(value) : value);
+};
+
+// ─── expressions ─────────────────────────────────────────────────────────────
+
+type ValueOf<O> = O extends { readonly [OPERAND]: { value: infer V } } ? V : never;
+type AliasesOf<O> = O extends { readonly [OPERAND]: { aliases: infer A extends string } } ? A : never;
+type NullsOf<O> = O extends { readonly [OPERAND]: { nulls: infer N extends string } } ? N : never;
+
+// the value an operand reads in a query where the `N` aliases may be missing
+type ValueIn<O, N extends string> = [NullsOf<O> & N] extends [never] ? ValueOf<O> : ValueOf<O> | null;
+
+type ComparisonOp = '=' | '!=' | '<' | '<=' | '>' | '>=';
+
+type ValueFor<V, O extends Op> = O extends 'is' | 'is not'
+  ? null extends V ? null : never
+  : NonNullable<V>;
+
+// comparisons also take another operand, as long as its values are compatible
+type RhsFor<V, O extends Op, A extends string = string> =
+  | ValueFor<V, O>
+  | (O extends ComparisonOp ? Operand<A, NonNullable<V> | null> : never);
+
+type Condition<A extends string = string> = Operand<A, boolean, never>;
+
+const compare = (lhs: Operand, op: Op, rhs: unknown): Node => ({
+  kind: 'compare',
+  lhs: lhs[NODE],
+  op,
+  rhs: isOperand(rhs) ? rhs[NODE] : { kind: 'value', value: rhs },
+});
+
+// a value, or another operand: one generic for both would infer it as its
+// constraint, losing the operand's aliases
+type ExprOf = {
+  <L extends Operand, O extends Op>(lhs: L, op: O, rhs: ValueFor<ValueOf<L>, O>): Condition<AliasesOf<L>>;
+  <L extends Operand, O extends ComparisonOp, R extends Operand<string, NonNullable<ValueOf<L>> | null>>(lhs: L, op: O, rhs: R): Condition<AliasesOf<L> | AliasesOf<R>>;
+};
+
+const exprOf: ExprOf = (lhs: Operand, op: Op, rhs: unknown) => operand(compare(lhs, op, rhs)) as never;
+
+const group = (op: 'AND' | 'OR') => <E extends Condition>(exprs: E[]) =>
+  operand({ kind: 'group', op, nodes: exprs.map(expr => expr[NODE]) }) as unknown as Condition<AliasesOf<E>>;
+
+const expr = Object.assign(exprOf, {
+  and: group('AND'),
+  or: group('OR'),
+});
+
+// a fragment of raw SQL: interpolated operands are rendered in place, and
+// any other value is passed as a parameter
+const f = <V extends unknown[]>(strings: TemplateStringsArray, ...values: V) =>
+  operand({ kind: 'fragment', strings: [...strings], values }) as unknown as Operand<AliasesOf<V[number]>, unknown, never>;
+
+// every table an operand reads from must be part of the query, under the
+// alias it's referenced by
+type Scope = Map<string, Table>;
+
+const assertInScope = (scope: Scope, node: Node): Node => {
+  switch (node.kind) {
+    case 'ref': {
+      const table = scope.get(node.alias);
+      if (!table || !columnsOf(table).includes(node.col)) throw new Error(`"${node.alias}.${node.col.key}" isn't part of the query`);
+      break;
+    }
+    case 'compare':
+      assertInScope(scope, node.lhs);
+      if (node.rhs.kind !== 'value') assertInScope(scope, node.rhs);
+      break;
+    case 'group':
+      node.nodes.forEach(node => assertInScope(scope, node));
+      break;
+    case 'fragment':
+      node.values.filter(isOperand).forEach(value => assertInScope(scope, value[NODE]));
+      break;
+    case 'call':
+      assertInScope(scope, node.arg);
+      break;
+  }
+
+  return node;
+};
+
+const renderWhere = (b: SqlBuilder, where: Node[]) => where.length === 0
+  ? b
+  : b.push(' WHERE ').join(where, ' AND ', node => renderNode(b, node));
+
+// ─── returning ───────────────────────────────────────────────────────────────
+
+// `true` returns every column, a list returns those columns (by key or by
+// reference), `false` returns nothing at all
+type Returning = boolean | (string | Operand)[];
+
+type Returnable<T extends Table> = Keys<T> | ColumnRef<AliasOf<T>, Keys<T>>;
+type ReturnedKey<R> = R extends string ? R : R extends { readonly [KEY]: infer K extends string } ? K : never;
+type Returned<T extends Table, R> = Pick<InferForSelect<ColumnsOf<T>>, ReturnedKey<R> & Keys<T>>;
+
+const returnedColumn = (table: Table, item: string | Operand) => {
+  if (typeof item === 'string') return columnOf(table, item);
+
+  const node = item[NODE];
+  const owned = node.kind === 'ref' && node.path.length === 0 && node.alias === table[ALIAS] && columnsOf(table).includes(node.col);
+  if (!owned) throw new Error(`Only columns of "${table[ALIAS]}" can be returned`);
+
+  return node.col;
+};
+
+const runReturning = async (db: IDatabase, b: SqlBuilder, table: Table, returning: Returning) => {
+  if (returning === false) {
+    await run(db, b.build());
+    return undefined;
+  }
+
+  const cols = returning === true
+    ? columnsOf(table)
+    : returning.map(item => returnedColumn(table, item));
+
+  // an empty RETURNING isn't valid SQL, but it still takes one to know how
+  // many rows were affected
+  if (cols.length === 0) {
+    const rows = await run(db, b.push(' RETURNING 1').build());
+    return rows.map(() => ({}));
+  }
+
+  b.push(' RETURNING ').join(cols, ', ', col => b.push(quote(col.name), ' AS ', quote(col.key)));
+
+  const rows = await run(db, b.build());
+  return rows.map(row => Object.fromEntries(cols.map(col => [col.key, decode(db.dialect, col, row[col.key])])));
+};
+
+// ─── changes ─────────────────────────────────────────────────────────────────
+
+type Changes<C extends Columns> = {
+  set?: InferForUpdate<C>;
+  inc?: { [K in NumericKeys<C>]?: number };
+};
+
+type Assignment = { col: Column; op: 'set' | 'inc' | 'replace'; value?: unknown };
+
+const parseChanges = (table: Table, { set = {}, inc = {}, replace = [] }: { set?: Row; inc?: Row; replace?: string[] }) => {
+  const updatable = Object.fromEntries(columnsOf(table).filter(col => !col.generated && !col.primaryKey).map(col => [col.key, col]));
+  const updatableColumn = (key: string) => updatable[key] ?? raise(`"${key}" isn't an updatable column of "${table[NAME]}"`);
+
+  const sets = validate(updatable, set, { partial: true });
+
+  const incs = Object.entries(inc).filter(([, by]) => by !== undefined).map(([key, by]) => {
+    const col = updatableColumn(key);
+    if (col.type !== 'INTEGER' && col.type !== 'FLOAT') throw new Error(`"${key}" isn't a numeric column of "${table[NAME]}"`);
+    if (!Number.isFinite(by)) throw new ValidationError([{ path: [key], message: 'must be a finite number' }]);
+    return { col, op: 'inc', value: by };
+  });
+
+  return [
+    ...Object.entries(sets).map(([key, value]) => ({ col: updatableColumn(key), op: 'set', value })),
+    ...incs,
+    ...replace.map(key => ({ col: updatableColumn(key), op: 'replace' })),
+  ] as Assignment[];
+};
+
+// `qualifier` tells the row's current value apart from EXCLUDED's, on conflict
+const renderAssignments = (b: SqlBuilder, assignments: Assignment[], qualifier: string) => b
+  .join(assignments, ', ', ({ col, op, value }) => {
+    if (op === 'replace') return b.push(quote(col.name), ' = EXCLUDED.', quote(col.name));
+    if (op === 'inc') return b.push(quote(col.name), ' = ', quote(qualifier), '.', quote(col.name), ' + ').param(value);
+    return b.push(quote(col.name), ' = ').param(encode(b.dialect, col, value));
+  });
+
+// ─── insert ──────────────────────────────────────────────────────────────────
+
+// `throw` is the same as no conflict handling at all, and `replace` sets
+// columns to the values that were about to be inserted
+type Conflict<C extends Columns> = {
+  on: (keyof C & string)[];
+  do: 'nothing' | 'throw' | Changes<C> & { replace?: (keyof InferForUpdate<C> & string)[] };
+};
+
+type InsertOptions<C extends Columns> = { conflict?: Conflict<C> };
+
+const GENERATORS: Partial<Record<Primitive, () => unknown>> = {
+  UUID: () => Bun.randomUUIDv7(),
+};
+
+const generate = (col: Column) => (GENERATORS[col.type] ?? raise(`Cannot generate a value for column "${col.name}"`))();
+
+class InsertBuilder<T extends Table> {
+  constructor(private readonly table: T,
+              private readonly rows: InferForInsert<ColumnsOf<T>>[] = []) { }
+
+  values(rows: InferForInsert<ColumnsOf<T>> | InferForInsert<ColumnsOf<T>>[]) {
+    return new InsertBuilder(this.table, [...this.rows, ...(Array.isArray(rows) ? rows : [rows])]);
+  }
+
+  insert(db: IDatabase, options?: InsertOptions<ColumnsOf<T>> & { returning?: true }): Promise<InferForSelect<ColumnsOf<T>>[]>;
+  insert(db: IDatabase, options: InsertOptions<ColumnsOf<T>> & { returning: false }): Promise<undefined>;
+  insert<R extends Returnable<T>>(db: IDatabase, options: InsertOptions<ColumnsOf<T>> & { returning: R[] }): Promise<Returned<T, R>[]>;
+  async insert(db: IDatabase, { returning = true, conflict }: { returning?: Returning, conflict?: { on: string[], do: 'nothing' | 'throw' | Row } } = {}) {
+    if (this.rows.length === 0) return returning === false ? undefined : [];
+
+    const { table } = this;
+    const cols = columnsOf(table);
+    const insertable = Object.fromEntries(cols.filter(col => !col.generated).map(col => [col.key, col]));
+    const rows = this.rows.map(row => validate(insertable, row));
+
+    const b = new SqlBuilder(db.dialect)
+      .push('INSERT INTO ', quote(table[NAME]), ' (', cols.map(col => quote(col.name)).join(', '), ') VALUES ');
+
+    b.join(rows, ', ', row => b
+      .push('(')
+      .join(cols, ', ', col => b.param(encode(db.dialect, col, col.generated ? generate(col) : row[col.key])))
+      .push(')'));
+
+    if (conflict) this.renderConflict(b, conflict);
+
+    return await runReturning(db, b, table, returning);
+  }
+
+  private renderConflict(b: SqlBuilder, conflict: { on: string[], do: 'nothing' | 'throw' | Row }) {
+    if (conflict.do === 'throw') return b;
+
+    b.push(' ON CONFLICT');
+    if (conflict.on.length > 0) b.push(' (', conflict.on.map(key => quote(columnOf(this.table, key).name)).join(', '), ')');
+    if (conflict.do === 'nothing') return b.push(' DO NOTHING');
+
+    const assignments = parseChanges(this.table, conflict.do);
+    if (assignments.length === 0) throw new Error('Nothing to update on conflict: `set`, `inc` and `replace` are empty');
+
+    return renderAssignments(b.push(' DO UPDATE SET '), assignments, this.table[NAME]);
+  }
+}
+
+const into = <T extends Table>(table: T) => new InsertBuilder(table);
+
+// ─── query ───────────────────────────────────────────────────────────────────
+
+type Direction = 'ASC' | 'DESC';
+
+// a field is an operand read under a key of its own
+type Field = [key: string, node: Node];
+
+type Query = {
+  table: Table;
+  scope: Scope;
+  select?: Field[];
+  where: Node[];
+  orderBy: [Node, Direction][];
+  limit?: number;
+  offset?: number;
+};
+
+// the row a projection reads, under the projection's own keys
+type Projected<P, N extends string> = Expand<{
+  [K in keyof P & string]: ValueIn<P[K], N>;
+}>;
+
+const count = (value: number, name: string) => Number.isSafeInteger(value) && value >= 0
+  ? value
+  : raise(`${name} must be a non-negative integer, got ${value}`);
+
+// `T` is the queried table, `A` the aliases in scope, `N` those of them whose
+// rows may be missing (left joined), and `R` the row the query reads: a whole
+// row of `T` unless `select` says otherwise
+class QueryBuilder<T extends Table, A extends string = AliasOf<T>, N extends string = never, R = InferForSelect<ColumnsOf<T>>> {
+  constructor(private readonly query: Query) { }
+
+  select<P extends Record<string, Operand<A>>>(projection: P) {
+    const fields = Object.entries(projection).map(([key, value]): Field => isOperand(value)
+      ? [key, assertInScope(this.query.scope, value[NODE])]
+      : raise(`"${key}" must be a column reference or an expression`));
+
+    return new QueryBuilder<T, A, N, Projected<P, N>>({ ...this.query, select: fields });
+  }
+
+  where<L extends Operand<A>, O extends Op>(lhs: L, op: O, rhs: RhsFor<ValueIn<L, N>, O, A>): QueryBuilder<T, A, N, R>;
+  where(condition: Condition<A>): QueryBuilder<T, A, N, R>;
+  where(...args: [Operand, Op, unknown] | [Operand]) {
+    const node = args.length === 1 ? args[0][NODE] : compare(...args);
+    return new QueryBuilder<T, A, N, R>({ ...this.query, where: [...this.query.where, assertInScope(this.query.scope, node)] });
+  }
+
+  orderBy(operands: (Operand<A> | [Operand<A>, Direction])[]) {
+    const orderBy = operands.map(item => Array.isArray(item)
+      ? [assertInScope(this.query.scope, item[0][NODE]), item[1]] as [Node, Direction]
+      : [assertInScope(this.query.scope, item[NODE]), 'ASC'] as [Node, Direction]);
+
+    return new QueryBuilder<T, A, N, R>({ ...this.query, orderBy: [...this.query.orderBy, ...orderBy] });
+  }
+
+  limit(n: number) {
+    return new QueryBuilder<T, A, N, R>({ ...this.query, limit: count(n, 'limit') });
+  }
+
+  offset(n: number) {
+    return new QueryBuilder<T, A, N, R>({ ...this.query, offset: count(n, 'offset') });
+  }
+
+  async all(db: IDatabase) {
+    const fields = this.fields();
+    const rows = await run(db, this.renderSelect(new SqlBuilder(db.dialect), fields).build());
+    const decoders = fields.map(([key, node]) => [key, decodeFor(db.dialect, node)] as const);
+
+    return rows.map(row => Object.fromEntries(decoders.map(([key, decode]) => [key, decode(row[key])]))) as R[];
+  }
+
+  async one(db: IDatabase) {
+    const [row] = await this.top().all(db);
+    return row ?? null;
+  }
+
+  async exists(db: IDatabase) {
+    const rows = await this.top().select({}).all(db);
+    return rows.length > 0;
+  }
+
+  // counts the rows `all` would return: as a subquery, limit and offset still
+  // apply, and postgres doesn't take ORDER BY next to a bare COUNT(*)
+  async count(db: IDatabase) {
+    const b = new SqlBuilder(db.dialect).push('SELECT COUNT(*) AS "count" FROM (');
+    const [row] = await run(db, this.renderSelect(b, []).push(') AS "q"').build());
+    return Number(row!['count']);
+  }
+
+  update(db: IDatabase, changes: Changes<ColumnsOf<T>> & { returning: false }): Promise<undefined>;
+  update<K extends Returnable<T>>(db: IDatabase, changes: Changes<ColumnsOf<T>> & { returning: K[] }): Promise<Returned<T, K>[]>;
+  update(db: IDatabase, changes: Changes<ColumnsOf<T>> & { returning?: true }): Promise<InferForSelect<ColumnsOf<T>>[]>;
+  async update(db: IDatabase, { returning = true, ...changes }: Changes<ColumnsOf<T>> & { returning?: Returning }) {
+    this.assertPlain('update');
+
+    const { table, where } = this.query;
+    const assignments = parseChanges(table, changes as { set?: Row; inc?: Row });
+    if (assignments.length === 0) throw new Error('Nothing to update: both `set` and `inc` are empty');
+
+    const b = renderTable(new SqlBuilder(db.dialect).push('UPDATE '), table).push(' SET ');
+
+    renderAssignments(b, assignments, table[ALIAS]);
+    renderWhere(b, where);
+
+    return await runReturning(db, b, table, returning);
+  }
+
+  delete(db: IDatabase, options: { returning: true }): Promise<InferForSelect<ColumnsOf<T>>[]>;
+  delete<K extends Returnable<T>>(db: IDatabase, options: { returning: K[] }): Promise<Returned<T, K>[]>;
+  delete(db: IDatabase, options?: { returning?: false }): Promise<undefined>;
+  async delete(db: IDatabase, { returning = false }: { returning?: Returning } = {}) {
+    this.assertPlain('delete');
+
+    const { table, where } = this.query;
+    const b = renderTable(new SqlBuilder(db.dialect).push('DELETE FROM '), table);
+
+    renderWhere(b, where);
+
+    return await runReturning(db, b, table, returning);
+  }
+
+  // every column of the queried table, unless `select` says otherwise
+  private fields(): Field[] {
+    const { table, select } = this.query;
+    return select ?? columnsOf(table).map(col => [col.key, { kind: 'ref', alias: table[ALIAS], col, path: [] }]);
+  }
+
+  private renderSelect(b: SqlBuilder, fields: Field[]) {
+    const { table, where, orderBy, limit, offset } = this.query;
+
+    b.push('SELECT ');
+
+    // an empty select list isn't valid SQL, but each matching row still needs
+    // an (empty) object
+    if (fields.length === 0) b.push('1');
+    else b.join(fields, ', ', ([key, node]) => renderNode(b, node).push(' AS ', quote(key)));
+
+    renderTable(b.push(' FROM '), table);
+    renderWhere(b, where);
+
+    if (orderBy.length > 0) b.push(' ORDER BY ').join(orderBy, ', ', ([node, dir]) => renderNode(b, node).push(' ', dir));
+    // sqlite requires LIMIT whenever there's an OFFSET, and there's no "no
+    // limit" value both sqlite and postgres accept other than a huge number
+    if (limit !== undefined || offset !== undefined) b.push(` LIMIT ${limit ?? Number.MAX_SAFE_INTEGER}`);
+    if (offset !== undefined) b.push(` OFFSET ${offset}`);
+
+    return b;
+  }
+
+  // keeps a `limit(0)`, which can never match
+  private top() {
+    return this.limit(Math.min(this.query.limit ?? 1, 1));
+  }
+
+  // UPDATE/DELETE ... ORDER BY/LIMIT isn't portable, so refuse it rather than
+  // silently affecting more rows than the query suggests
+  private assertPlain(operation: string) {
+    const { select, orderBy, limit, offset } = this.query;
+    if (select || orderBy.length > 0 || limit !== undefined || offset !== undefined) {
+      throw new Error(`Cannot ${operation} with select, orderBy, limit or offset`);
+    }
+  }
+}
+
+const from = <T extends Table>(table: T) => new QueryBuilder<T>({
+  table,
+  scope: new Map([[table[ALIAS], table]]),
+  where: [],
+  orderBy: [],
+});
+
 // ─── ddl ─────────────────────────────────────────────────────────────────────
 
 const renderColumnDefinition = (dialect: Dialect, col: Column) => [
@@ -534,6 +998,10 @@ export {
   defineType,
   embedded,
   exec,
+  expr,
+  f,
+  from,
+  into,
   parse,
   types as t,
 };
