@@ -33,6 +33,17 @@ const numeric: Codec = {
 // sqlite's JSON paths quote each key, so that any key is a valid one
 const jsonPath = (path: string[]) => `'$${path.map(key => `."${key.replaceAll('"', '\\"').replaceAll('\'', '\'\'')}"`).join('')}'`;
 
+const literal = (str: string) => `'${str.replaceAll('\'', '\'\'')}'`;
+
+// how columns read inside a JSON document: JSON columns as documents, and
+// bigints and binaries as strings, which JSON can't hold otherwise
+const jsonOf = (sql: string, type: Primitive) => {
+  if (type === 'JSON') return `json(${sql})`;
+  if (type === 'BIGINT') return `CAST(${sql} AS TEXT)`;
+  if (type === 'BINARY') return `CASE WHEN ${sql} IS NULL THEN NULL ELSE lower(hex(${sql})) END`;
+  return sql;
+};
+
 const dialect: Dialect = {
   name: 'sqlite',
   placeholder: () => '?',
@@ -44,6 +55,11 @@ const dialect: Dialect = {
   },
   // LIKE already ignores the case of ASCII letters
   operators: { 'ILIKE': 'LIKE', 'NOT ILIKE': 'NOT LIKE' },
+  jsonOf,
+  aggregate: (entries, filter) => {
+    const object = `json_object(${entries.map(([key, sql]) => `${literal(key)}, ${sql}`).join(', ')})`;
+    return `json_group_array(${object})${filter ? ` FILTER (WHERE ${filter})` : ''}`;
+  },
   json: (sql, path, type) => `${sql} ${type === 'JSON' ? '->' : '->>'} ${jsonPath(path)}`,
   codecs: {
     BIGINT:    { encode: (value: bigint) => value, decode: (value: number | bigint) => BigInt(value) },

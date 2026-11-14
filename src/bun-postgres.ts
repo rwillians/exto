@@ -49,6 +49,16 @@ const json = (sql: string, path: string[], type: Primitive) => {
   return CASTS[type] ? `(${text})::${CASTS[type]}` : text;
 };
 
+const literal = (str: string) => `'${str.replaceAll('\'', '\'\'')}'`;
+
+// how columns read inside a JSON document: bigints and binaries as strings,
+// which JSON can't hold otherwise
+const jsonOf = (sql: string, type: Primitive) => {
+  if (type === 'BIGINT') return `(${sql})::TEXT`;
+  if (type === 'BINARY') return `encode(${sql}, 'hex')`;
+  return sql;
+};
+
 // Bun.SQL sends objects and arrays as JSON, and reads JSONB already parsed
 const dialect: Dialect = {
   name: 'postgres',
@@ -59,6 +69,11 @@ const dialect: Dialect = {
     : undefined,
   json,
   operators: {},
+  jsonOf,
+  aggregate: (entries, filter) => {
+    const object = `jsonb_build_object(${entries.map(([key, sql]) => `${literal(key)}, ${sql}`).join(', ')})`;
+    return `COALESCE(jsonb_agg(${object})${filter ? ` FILTER (WHERE ${filter})` : ''}, '[]'::JSONB)`;
+  },
   codecs: {
     BIGINT:    { encode: (value: bigint) => value, decode: (value: string | bigint) => BigInt(value) },
     BINARY:    { encode: (value: Uint8Array) => value, decode: (value: Uint8Array) => new Uint8Array(value) },

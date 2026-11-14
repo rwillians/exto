@@ -234,7 +234,8 @@ type Node =
   | { kind: 'fragment'; strings: readonly string[]; values: unknown[] }
   | { kind: 'call'; fn: 'COUNT' | 'SUM'; arg: Node }
   | { kind: 'compare'; lhs: Node; op: Op; rhs: Node | { kind: 'value'; value: unknown } }
-  | { kind: 'group'; op: 'AND' | 'OR'; nodes: Node[] };
+  | { kind: 'group'; op: 'AND' | 'OR'; nodes: Node[] }
+  | { kind: 'aggregate'; fields: Field[]; filter?: Node };
 
 // anything that renders to SQL. Type only: `aliases` are the tables it reads
 // from, `value` is what it evaluates to, and `nulls` are the aliases whose
@@ -386,6 +387,12 @@ type DialectName = 'postgres' | 'sqlite' | (string & {});
  * `json` extracts a field nested in a JSON column, as an SQL value of the
  * field's type: a JSON document itself when the field is a JSON one (a
  * record, or embedded fields).
+ *
+ * `jsonOf` renders a column's value the way it reads inside a JSON document
+ * (see `fromJson`), and `aggregate` a JSON array with an object per row:
+ * `entries` are its keys and their JSON values, and `filter` leaves out the
+ * rows it's false for. Parameters are positional, so their SQL has to appear
+ * in the given order, `filter` last.
  */
 interface Dialect {
   name: DialectName;
@@ -393,6 +400,8 @@ interface Dialect {
   type(column: Column): string;
   generated(column: Column): string | undefined;
   json(sql: string, path: string[], type: Primitive): string;
+  jsonOf(sql: string, type: Primitive): string;
+  aggregate(entries: [key: string, sql: string][], filter: string | undefined): string;
   // operators the database spells differently, e.g. ILIKE
   operators: Partial<Record<Op, string>>;
   codecs: Record<Primitive, Codec>;
@@ -415,26 +424,27 @@ interface IDatabase {
 // ─── encoding ────────────────────────────────────────────────────────────────
 
 // inside JSON documents, timestamps are ISO 8601 strings, bigints are
-// strings of digits and binaries are base64 strings
+// strings of digits and binaries are hex strings
 const toJson = (col: Column, value: unknown): unknown => {
   if (value === null || value === undefined) return null;
   if (col.fields && col.many) return (value as Row[]).map(item => toJson({ ...col, many: undefined }, item));
   if (col.fields) return Object.fromEntries(Object.values(col.fields).map(field => [field.key, toJson(field, (value as Row)[field.key])]));
   if (col.type === 'TIMESTAMP') return (value as Date).toISOString();
   if (col.type === 'BIGINT') return String(value);
-  if (col.type === 'BINARY') return Buffer.from(value as Uint8Array).toString('base64');
+  if (col.type === 'BINARY') return Buffer.from(value as Uint8Array).toString('hex');
 
   return value;
 };
 
-// databases may read JSON numbers as bigints and booleans as numbers
+// databases may read JSON numbers as bigints, booleans as numbers and
+// timestamps as epoch milliseconds
 const fromJson = (col: Column, value: unknown): unknown => {
   if (value === null || value === undefined) return null;
   if (col.fields && col.many) return (value as Row[]).map(item => fromJson({ ...col, many: undefined }, item));
   if (col.fields) return Object.fromEntries(Object.values(col.fields).map(field => [field.key, fromJson(field, (value as Row)[field.key])]));
-  if (col.type === 'TIMESTAMP') return new Date(value as string);
+  if (col.type === 'TIMESTAMP') return new Date(typeof value === 'bigint' ? Number(value) : value as string | number);
   if (col.type === 'BIGINT') return BigInt(value as string);
-  if (col.type === 'BINARY') return new Uint8Array(Buffer.from(value as string, 'base64'));
+  if (col.type === 'BINARY') return new Uint8Array(Buffer.from(value as string, 'hex'));
   if (NUMERIC.includes(col.type)) return Number(value);
   if (col.type === 'BOOLEAN') return value === true || value === 1 || value === 1n;
 
@@ -479,6 +489,13 @@ class SqlBuilder {
     return this;
   }
 
+  // the SQL `fn` pushes, rather than pushed; its parameters are kept
+  capture(fn: () => unknown) {
+    const start = this.frags.length;
+    fn();
+    return this.frags.splice(start).join('');
+  }
+
   build(): Statement {
     return { sql: this.frags.join(''), params: this.params };
   }
@@ -507,9 +524,15 @@ const renderTable = (b: SqlBuilder, table: Table) => table[ALIAS] === table[NAME
 const renderNode = (b: SqlBuilder, node: Node): SqlBuilder => {
   switch (node.kind) {
     case 'ref': {
-      const sql = `${quote(node.alias)}.${quote(node.col.name)}`;
+      const sql = refSql(node);
       if (node.path.length === 0) return b.push(sql);
       return b.push(b.dialect.json(sql, node.path.map(field => field.name), node.path.at(-1)!.type));
+    }
+
+    case 'aggregate': {
+      const entries = node.fields.map(([key, field]): [string, string] => [key, b.capture(() => renderJson(b, field))]);
+      const filter = node.filter && b.capture(() => renderNode(b, node.filter!));
+      return b.push(b.dialect.aggregate(entries, filter));
     }
 
     case 'compare': {
@@ -563,6 +586,20 @@ const renderNode = (b: SqlBuilder, node: Node): SqlBuilder => {
   }
 };
 
+const refSql = (node: Node & { kind: 'ref' }) => `${quote(node.alias)}.${quote(node.col.name)}`;
+
+// an operand as a value inside a JSON document: columns as `fromJson` reads
+// them, anything else as it is
+const renderJson = (b: SqlBuilder, node: Node) => {
+  if (node.kind !== 'ref') return renderNode(b, node);
+  if (node.path.length === 0) return b.push(b.dialect.jsonOf(refSql(node), node.col.type));
+  return b.push(b.dialect.jsonOf(b.dialect.json(refSql(node), node.path.map(field => field.name), 'JSON'), 'JSON'));
+};
+
+const fromJsonFor = (node: Node, value: unknown) => node.kind === 'ref'
+  ? fromJson(node.path.at(-1) ?? node.col, value)
+  : value;
+
 // values compared with a column are encoded the way the column stores them
 const encodeFor = (dialect: Dialect, node: Node, value: unknown) => {
   if (node.kind !== 'ref') return value;
@@ -574,6 +611,8 @@ const encodeFor = (dialect: Dialect, node: Node, value: unknown) => {
 
 const decodeFor = (dialect: Dialect, node: Node) => (value: unknown) => {
   if (node.kind === 'call') return Number(value ?? 0);
+  if (node.kind === 'aggregate') return (dialect.codecs.JSON.decode(value) as Row[])
+    .map(row => Object.fromEntries(node.fields.map(([key, field]) => [key, fromJsonFor(field, row[key])])));
   if (node.kind !== 'ref') return typeof value === 'bigint' ? Number(value) : value;
   if (node.path.length === 0) return decode(dialect, node.col, value);
 
@@ -679,12 +718,41 @@ const group = (op: 'AND' | 'OR') => <E extends Predicate>(exprs: E[]) =>
 const call = (fn: 'COUNT' | 'SUM') => <O extends Operand>(arg: O) =>
   operand({ kind: 'call', fn, arg: arg[NODE] }) as unknown as Operand<AliasesOf<O>, number, never>;
 
-// aggregates: a sum of no rows is 0, rather than SQL's null
+const isTable = (value: unknown): value is Table => typeof value === 'object' && value !== null && NAME in value;
+
+// the rows of a table (or of a projection) in a group, as a list. Rows a
+// left join found no match for are left out, telling them apart by a
+// column that's never null: the table's primary key, or any required one
+type Aggregate = {
+  <T extends Table>(table: T): Operand<AliasOf<T>, InferForSelect<ColumnsOf<T>>[], never>;
+  <P extends Record<string, Operand>>(projection: P): Operand<AliasesOf<P[keyof P]>, Projected<P, never>[], never>;
+};
+
+const aggregate: Aggregate = (source: Table | Record<string, Operand>) => {
+  const fields = Object.entries(source).map(([key, value]): Field => isOperand(value)
+    ? [key, value[NODE]]
+    : raise(`"${key}" must be a column reference or an expression`));
+
+  const refs = isTable(source)
+    ? columnsOf(source).map((col): Node => ({ kind: 'ref', alias: source[ALIAS], col, path: [] }))
+    : fields.map(([, node]) => node);
+
+  const required = refs
+    .filter((node): node is Node & { kind: 'ref' } => node.kind === 'ref' && node.path.length === 0 && !node.col.nullable)
+    .sort((a, b) => Number(b.col.primaryKey ?? false) - Number(a.col.primaryKey ?? false))[0];
+
+  const filter = required && compare(operand(required), 'IS NOT', null);
+  return operand({ kind: 'aggregate', fields, filter }) as never;
+};
+
+// aggregates: a sum of no rows is 0, rather than SQL's null, and so is a
+// count; an aggregate of no rows is an empty list
 const expr = Object.assign(exprOf, {
   and: group('AND'),
   or: group('OR'),
   count: call('COUNT'),
   sum: call('SUM') as <O extends Operand<string, number | null>>(arg: O) => Operand<AliasesOf<O>, number, never>,
+  aggregate,
 });
 
 // a fragment of raw SQL: interpolated operands are rendered in place, and
@@ -716,6 +784,10 @@ const assertInScope = (scope: Scope, node: Node): Node => {
       break;
     case 'call':
       assertInScope(scope, node.arg);
+      break;
+    case 'aggregate':
+      node.fields.forEach(([, field]) => assertInScope(scope, field));
+      if (node.filter) assertInScope(scope, node.filter);
       break;
   }
 

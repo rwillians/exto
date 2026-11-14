@@ -62,6 +62,18 @@ suite('primitive types', (fresh) => {
     expect(await from(things).all(db)).toEqual([inserted!]);
   });
 
+  test('round-trip every type through an aggregate', async () => {
+    const meta = { huge: HUGE, day: '2024-02-29', blob: new Uint8Array([9, 8]), active: true };
+    const inserted = await into(things).values([
+      thing({ blob: new Uint8Array([0, 1, 255]), flag: true, price: 12.34, huge: HUGE, label: 'Hello', code: 'abcdefgh', meta }),
+      thing(),
+    ]).insert(db);
+
+    const row = await from(things).select({ all: expr.aggregate(things) }).one(db);
+
+    expect(row!.all.toSorted((x, y) => x.seq - y.seq)).toEqual(inserted);
+  });
+
   test('fill in nulls and defaults', async () => {
     const [inserted] = await into(things).values(thing()).insert(db);
 

@@ -351,6 +351,25 @@ await from(parent)
 // → (Task & { children: number })[]
 ```
 
+`expr.aggregate()` collects a table's rows in each group into a list, or
+just the columns you pick:
+
+```ts
+await from(parent)
+  .leftJoin(child, expr(parent.id, '=', child.parentId))
+  .where(parent.parentId, 'IS', null)
+  .groupBy([parent.id])
+  .select({
+    ...parent,
+    children: expr.aggregate(child),
+    summary: expr.aggregate({ id: child.id, kind: child.payload.kind }),
+  })
+  .all(db);
+// → (Task & { children: Task[], summary: { id: string, kind: string }[] })[]
+```
+
+A parent without children gets an empty list.
+
 Columns of a left-joined table are nullable: selecting `child.id` gives
 `string | null`. A query only takes columns of the tables it reads from, so
 referencing `child` before joining it is a type error.
