@@ -220,12 +220,12 @@ declare const FRAGMENT: unique symbol;
 
 type Op =
   | '=' | '!=' | '<' | '<=' | '>' | '>='
-  | 'is' | 'is not'
-  | 'is distinct from' | 'is not distinct from'
-  | 'like' | 'not like'
-  | 'ilike' | 'not ilike'
-  | 'in' | 'not in'
-  | 'between' | 'not between';
+  | 'IS' | 'IS NOT'
+  | 'IS DISTINCT FROM' | 'IS NOT DISTINCT FROM'
+  | 'LIKE' | 'NOT LIKE'
+  | 'ILIKE' | 'NOT ILIKE'
+  | 'IN' | 'NOT IN'
+  | 'BETWEEN' | 'NOT BETWEEN';
 
 // what an operand renders to: a column (or a field nested in one), a fragment
 // of raw SQL, or an expression built from other nodes
@@ -514,23 +514,23 @@ const renderNode = (b: SqlBuilder, node: Node): SqlBuilder => {
 
     case 'compare': {
       const { lhs, op, rhs } = node;
-      const operator = b.dialect.operators[op] ?? op.toUpperCase();
+      const operator = b.dialect.operators[op] ?? op;
       if (rhs.kind !== 'value') return renderNode(renderNode(b, lhs).push(' ', operator, ' '), rhs);
 
       const param = (value: unknown) => b.param(encodeFor(b.dialect, lhs, value));
       const values = rhs.value as unknown[];
 
       switch (op) {
-        case 'is':
-        case 'is not':
+        case 'IS':
+        case 'IS NOT':
           return renderNode(b, lhs).push(' ', operator, ' ', String(rhs.value).toUpperCase());
         // `IN ()` isn't valid SQL, but an empty list still has an answer
-        case 'in':
-        case 'not in':
-          if (values.length === 0) return b.push(op === 'in' ? '1 = 0' : '1 = 1');
+        case 'IN':
+        case 'NOT IN':
+          if (values.length === 0) return b.push(op === 'IN' ? '1 = 0' : '1 = 1');
           return renderNode(b, lhs).push(' ', operator, ' (').join(values, ', ', param).push(')');
-        case 'between':
-        case 'not between':
+        case 'BETWEEN':
+        case 'NOT BETWEEN':
           renderNode(b, lhs).push(' ', operator, ' ');
           param(values[0]).push(' AND ');
           return param(values[1]);
@@ -592,20 +592,20 @@ type NullsOf<O> = O extends { readonly [OPERAND]: { nulls: infer N extends strin
 type ValueIn<O, N extends string> = [NullsOf<O> & N] extends [never] ? ValueOf<O> : ValueOf<O> | null;
 
 // operators that also take another operand
-type ColumnOp = '=' | '!=' | '<' | '<=' | '>' | '>=' | 'is distinct from' | 'is not distinct from';
-type MatchOp = 'like' | 'not like' | 'ilike' | 'not ilike';
+type ColumnOp = '=' | '!=' | '<' | '<=' | '>' | '>=' | 'IS DISTINCT FROM' | 'IS NOT DISTINCT FROM';
+type MatchOp = 'LIKE' | 'NOT LIKE' | 'ILIKE' | 'NOT ILIKE';
 
-// `is` and `is not` take null (when the value can be null) and booleans
+// `IS` and `IS NOT` take null (when the value can be null) and booleans
 // (when it's a boolean)
-type ValueFor<V, O extends Op> = O extends 'is' | 'is not'
+type ValueFor<V, O extends Op> = O extends 'IS' | 'IS NOT'
   ? (null extends V ? null : never) | (boolean extends NonNullable<V> ? boolean : never)
   : O extends MatchOp
   ? [NonNullable<V>] extends [string] ? string : unknown extends V ? string : never
-  : O extends 'in' | 'not in'
+  : O extends 'IN' | 'NOT IN'
   ? readonly NonNullable<V>[]
-  : O extends 'between' | 'not between'
+  : O extends 'BETWEEN' | 'NOT BETWEEN'
   ? readonly [low: NonNullable<V>, high: NonNullable<V>]
-  : O extends 'is distinct from' | 'is not distinct from'
+  : O extends 'IS DISTINCT FROM' | 'IS NOT DISTINCT FROM'
   ? NonNullable<V> | null
   : NonNullable<V>;
 
@@ -624,7 +624,7 @@ type Predicate<A extends string = string> = Condition<A> | Fragment<A>;
 
 // LIKE only matches text the same way across databases
 const TEXTUAL: readonly Primitive[] = ['CITEXT', 'STRING', 'TEXT'];
-const COLUMN_OPS: readonly Op[] = ['=', '!=', '<', '<=', '>', '>=', 'is distinct from', 'is not distinct from'];
+const COLUMN_OPS: readonly Op[] = ['=', '!=', '<', '<=', '>', '>=', 'IS DISTINCT FROM', 'IS NOT DISTINCT FROM'];
 
 const compare = (lhs: Operand, op: Op, rhs: unknown): Node => {
   const node = lhs[NODE];
@@ -633,22 +633,22 @@ const compare = (lhs: Operand, op: Op, rhs: unknown): Node => {
   if (isOperand(rhs) && !COLUMN_OPS.includes(op)) fail('takes a value, not another operand');
 
   switch (op) {
-    case 'is':
-    case 'is not':
+    case 'IS':
+    case 'IS NOT':
       if (rhs !== null && rhs !== true && rhs !== false) fail('takes null, true or false');
       break;
-    case 'in':
-    case 'not in':
+    case 'IN':
+    case 'NOT IN':
       if (!Array.isArray(rhs)) fail('takes a list of values');
       break;
-    case 'between':
-    case 'not between':
+    case 'BETWEEN':
+    case 'NOT BETWEEN':
       if (!Array.isArray(rhs) || rhs.length !== 2) fail('takes a [low, high] pair');
       break;
-    case 'like':
-    case 'not like':
-    case 'ilike':
-    case 'not ilike':
+    case 'LIKE':
+    case 'NOT LIKE':
+    case 'ILIKE':
+    case 'NOT ILIKE':
       if (typeof rhs !== 'string') fail('takes a string pattern');
       if (node.kind === 'ref' && !TEXTUAL.includes((node.path.at(-1) ?? node.col).type)) {
         raise(`"${op}" only takes text columns, "${[node.alias, node.col.key, ...node.path.map(field => field.key)].join('.')}" isn't one`);

@@ -239,15 +239,15 @@ await queued.count(db);  // → number
 | operator                                      | value                                                   |
 | :-------------------------------------------- | :------------------------------------------------------ |
 | `'='` `'!='` `'<'` `'<='` `'>'` `'>='`        | the column's type, or another column                    |
-| `'is distinct from'` `'is not distinct from'` | like `'!='` and `'='`, but `null` is a value too        |
-| `'in'` `'not in'`                             | a list of the column's type                             |
-| `'between'` `'not between'`                   | a `[low, high]` pair, both included                     |
-| `'like'` `'not like'`                         | a `string` pattern (text columns)                       |
-| `'ilike'` `'not ilike'`                       | a case-insensitive `string` pattern (text columns)      |
-| `'is'` `'is not'`                             | `null` (optional columns), `true` or `false` (booleans) |
+| `'IS DISTINCT FROM'` `'IS NOT DISTINCT FROM'` | like `'!='` and `'='`, but `null` is a value too        |
+| `'IN'` `'NOT IN'`                             | a list of the column's type                             |
+| `'BETWEEN'` `'NOT BETWEEN'`                   | a `[low, high]` pair, both included                     |
+| `'LIKE'` `'NOT LIKE'`                         | a `string` pattern (text columns)                       |
+| `'ILIKE'` `'NOT ILIKE'`                       | a case-insensitive `string` pattern (text columns)      |
+| `'IS'` `'IS NOT'`                             | `null` (optional columns), `true` or `false` (booleans) |
 
-`like` is case-sensitive on postgres (except for `t.citext()` columns), and
-case-insensitive for ASCII letters on sqlite. Use `ilike` to ignore case on
+`LIKE` is case-sensitive on postgres (except for `t.citext()` columns), and
+case-insensitive for ASCII letters on sqlite. Use `ILIKE` to ignore case on
 both.
 
 ### Picking columns
@@ -344,7 +344,7 @@ const child = tasks.as('child');
 
 await from(parent)
   .leftJoin(child, expr(parent.id, '=', child.parentId))
-  .where(parent.parentId, 'is', null)
+  .where(parent.parentId, 'IS', null)
   .groupBy([parent.id])
   .select({ ...parent, children: expr.count(child.id) })
   .all(db);

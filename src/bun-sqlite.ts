@@ -43,7 +43,7 @@ const dialect: Dialect = {
     return undefined;
   },
   // LIKE already ignores the case of ASCII letters
-  operators: { 'ilike': 'LIKE', 'not ilike': 'NOT LIKE' },
+  operators: { 'ILIKE': 'LIKE', 'NOT ILIKE': 'NOT LIKE' },
   json: (sql, path, type) => `${sql} ${type === 'JSON' ? '->' : '->>'} ${jsonPath(path)}`,
   codecs: {
     BIGINT:    { encode: (value: bigint) => value, decode: (value: number | bigint) => BigInt(value) },

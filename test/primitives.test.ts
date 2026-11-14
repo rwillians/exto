@@ -82,30 +82,30 @@ suite('primitive types', (fresh) => {
       await into(things).values([thing({ flag: true }), thing({ flag: false })]).insert(db);
     });
 
-    const flags = async (op: 'is' | 'is not', value: boolean) =>
+    const flags = async (op: 'IS' | 'IS NOT', value: boolean) =>
       (await from(things).where(things.flag, op, value).select({ flag: things.flag }).all(db)).map(row => row.flag);
 
-    test('is true and is false', async () => {
-      expect(await flags('is', true)).toEqual([true]);
-      expect(await flags('is', false)).toEqual([false]);
+    test('IS TRUE and IS FALSE', async () => {
+      expect(await flags('IS', true)).toEqual([true]);
+      expect(await flags('IS', false)).toEqual([false]);
     });
 
-    test('is not true and is not false', async () => {
-      expect(await flags('is not', true)).toEqual([false]);
-      expect(await flags('is not', false)).toEqual([true]);
+    test('IS NOT TRUE and IS NOT FALSE', async () => {
+      expect(await flags('IS NOT', true)).toEqual([false]);
+      expect(await flags('IS NOT', false)).toEqual([true]);
     });
 
-    test('is true and is false on nested fields', async () => {
+    test('IS TRUE and IS FALSE on nested fields', async () => {
       const meta = { huge: 1n, day: '2026-11-14', blob: new Uint8Array() };
       await into(things).values([thing({ meta: { ...meta, active: true } }), thing({ meta: { ...meta, active: false } })]).insert(db);
 
-      expect(await from(things).where(things.meta.active, 'is', true).select({ active: things.meta.active }).all(db)).toEqual([{ active: true }]);
-      // unlike `!=`, `is not` matches nulls too
-      expect(await from(things).where(things.meta.active, 'is not', true).orderBy([things.seq]).select({ active: things.meta.active }).all(db)).toEqual([{ active: null }, { active: null }, { active: false }]);
+      expect(await from(things).where(things.meta.active, 'IS', true).select({ active: things.meta.active }).all(db)).toEqual([{ active: true }]);
+      // unlike `!=`, `IS NOT` matches nulls too
+      expect(await from(things).where(things.meta.active, 'IS NOT', true).orderBy([things.seq]).select({ active: things.meta.active }).all(db)).toEqual([{ active: null }, { active: null }, { active: false }]);
     });
 
     test('rejects anything but null, true and false', async () => {
-      expect(() => from(things).where(things.flag, 'is', JSON.parse('1'))).toThrow('"is" takes null, true or false, got 1');
+      expect(() => from(things).where(things.flag, 'IS', JSON.parse('1'))).toThrow('"IS" takes null, true or false, got 1');
     });
   });
 
@@ -220,19 +220,19 @@ export const typeChecks = async (db: Database) => {
   // @ts-expect-error dates are YYYY-MM-DD strings, not Dates
   into(things).values(thing({ day: new Date() }));
 
-  // `is` and `is not` take booleans for booleans, and null for nullable values
-  from(things).where(things.flag, 'is', true).where(things.flag, 'is not', false);
-  from(things).where(things.label, 'is', null).where(expr(things.meta.active, 'is', false));
+  // `IS` and `IS NOT` take booleans for booleans, and null for nullable values
+  from(things).where(things.flag, 'IS', true).where(things.flag, 'IS NOT', false);
+  from(things).where(things.label, 'IS', null).where(expr(things.meta.active, 'IS', false));
 
   // fields nested in an optional column read null when the column is
   const active = await from(things).select({ active: things.meta.active }).all(db);
   assert<Equals<typeof active, { active: boolean | null }[]>>();
 
   // @ts-expect-error only nullable values can be tested for null
-  from(things).where(things.flag, 'is', null);
+  from(things).where(things.flag, 'IS', null);
 
   // @ts-expect-error only booleans can be tested for true or false
-  from(things).where(things.label, 'is', true);
+  from(things).where(things.label, 'IS', true);
 
   // bigint and decimal columns can be incremented
   from(things).update(db, { inc: { huge: 1, amount: 0.5 } });

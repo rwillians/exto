@@ -22,7 +22,7 @@ suite('left join', (fresh) => {
   test('counts the children of every parent', async () => {
     const rows = await from(parent)
       .leftJoin(child, expr(parent.id, '=', child.parentId))
-      .where(parent.parentId, 'is', null)
+      .where(parent.parentId, 'IS', null)
       .groupBy([parent.id])
       .orderBy([parent.payload.kind])
       .select({ ...parent, childCount: expr.count(child.id) })
@@ -57,7 +57,7 @@ suite('left join', (fresh) => {
   test('takes filters on the joined table', async () => {
     const count = await from(parent)
       .leftJoin(child, expr(parent.id, '=', child.parentId))
-      .where(child.id, 'is not', null)
+      .where(child.id, 'IS NOT', null)
       .count(db);
 
     expect(count).toBe(2);
@@ -72,7 +72,7 @@ export const typeChecks = async (db: Database) => {
 
   const k1 = await from(parent)
     .leftJoin(child, expr(parent.id, '=', child.parentId))
-    .where(parent.parentId, 'is', null)
+    .where(parent.parentId, 'IS', null)
     .groupBy([parent.id])
     .select({ ...parent, childCount: expr.count(child.id) })
     .all(db);

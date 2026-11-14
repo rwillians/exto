@@ -37,73 +37,73 @@ suite('where', (fresh) => {
       expect(await ids(from(tasks).where(tasks.attempts, '>=', 1).all(db))).toEqual(idsOf(1, 2, 3));
     });
 
-    test('is null and is not null', async () => {
+    test('IS NULL and IS NOT NULL', async () => {
       await into(tasks).values(task({ parentId: rows[0]!.id })).insert(db);
 
-      expect(await from(tasks).where(tasks.parentId, 'is', null).count(db)).toBe(4);
-      expect(await from(tasks).where(tasks.parentId, 'is not', null).count(db)).toBe(1);
+      expect(await from(tasks).where(tasks.parentId, 'IS', null).count(db)).toBe(4);
+      expect(await from(tasks).where(tasks.parentId, 'IS NOT', null).count(db)).toBe(1);
     });
 
-    test('like and not like', async () => {
-      expect(await ids(from(tasks).where(tasks.status, 'like', 'sch%').all(db))).toEqual(idsOf(0, 1));
-      expect(await ids(from(tasks).where(tasks.status, 'like', 'f_iled').all(db))).toEqual(idsOf(3));
-      expect(await ids(from(tasks).where(tasks.status, 'not like', '%u%').all(db))).toEqual(idsOf(3));
+    test('LIKE and NOT LIKE', async () => {
+      expect(await ids(from(tasks).where(tasks.status, 'LIKE', 'sch%').all(db))).toEqual(idsOf(0, 1));
+      expect(await ids(from(tasks).where(tasks.status, 'LIKE', 'f_iled').all(db))).toEqual(idsOf(3));
+      expect(await ids(from(tasks).where(tasks.status, 'NOT LIKE', '%u%').all(db))).toEqual(idsOf(3));
     });
 
-    test('like on nested fields', async () => {
-      expect(await from(tasks).where(tasks.payload.kind, 'like', 'Pr%').count(db)).toBe(4);
-      expect(await from(tasks).where(expr(tasks.payload.kind, 'not like', 'Pr%')).count(db)).toBe(0);
+    test('LIKE on nested fields', async () => {
+      expect(await from(tasks).where(tasks.payload.kind, 'LIKE', 'Pr%').count(db)).toBe(4);
+      expect(await from(tasks).where(expr(tasks.payload.kind, 'NOT LIKE', 'Pr%')).count(db)).toBe(0);
     });
 
-    test('like takes text columns only', () => {
-      expect(() => from(tasks).where(tasks.id, 'like', '01%')).toThrow('"like" only takes text columns, "tasks.id" isn\'t one');
-      expect(() => from(tasks).where(tasks.status, 'like', JSON.parse('1'))).toThrow('"like" takes a string pattern, got 1');
+    test('LIKE takes text columns only', () => {
+      expect(() => from(tasks).where(tasks.id, 'LIKE', '01%')).toThrow('"LIKE" only takes text columns, "tasks.id" isn\'t one');
+      expect(() => from(tasks).where(tasks.status, 'LIKE', JSON.parse('1'))).toThrow('"LIKE" takes a string pattern, got 1');
     });
 
     test('compares dates', async () => {
       expect(await ids(from(tasks).where(tasks.scheduledTo, '<', new Date()).all(db))).toEqual(idsOf(0, 3));
     });
 
-    test('ilike and not ilike', async () => {
-      expect(await ids(from(tasks).where(tasks.status, 'ilike', 'SCH%').all(db))).toEqual(idsOf(0, 1));
-      expect(await ids(from(tasks).where(tasks.status, 'not ilike', 'SCH%').all(db))).toEqual(idsOf(2, 3));
-      expect(await from(tasks).where(tasks.payload.kind, 'ilike', 'prune').count(db)).toBe(4);
+    test('ILIKE and NOT ILIKE', async () => {
+      expect(await ids(from(tasks).where(tasks.status, 'ILIKE', 'SCH%').all(db))).toEqual(idsOf(0, 1));
+      expect(await ids(from(tasks).where(tasks.status, 'NOT ILIKE', 'SCH%').all(db))).toEqual(idsOf(2, 3));
+      expect(await from(tasks).where(tasks.payload.kind, 'ILIKE', 'prune').count(db)).toBe(4);
     });
 
-    test('in and not in', async () => {
-      expect(await ids(from(tasks).where(tasks.status, 'in', ['scheduled', 'queued']).all(db))).toEqual(idsOf(0, 1, 2));
-      expect(await ids(from(tasks).where(tasks.status, 'not in', ['scheduled', 'queued']).all(db))).toEqual(idsOf(3));
-      expect(await ids(from(tasks).where(tasks.attempts, 'in', [1, 3]).all(db))).toEqual(idsOf(1, 2, 3));
+    test('IN and NOT IN', async () => {
+      expect(await ids(from(tasks).where(tasks.status, 'IN', ['scheduled', 'queued']).all(db))).toEqual(idsOf(0, 1, 2));
+      expect(await ids(from(tasks).where(tasks.status, 'NOT IN', ['scheduled', 'queued']).all(db))).toEqual(idsOf(3));
+      expect(await ids(from(tasks).where(tasks.attempts, 'IN', [1, 3]).all(db))).toEqual(idsOf(1, 2, 3));
     });
 
-    test('in an empty list matches nothing, and not in it matches everything', async () => {
-      expect(await from(tasks).where(tasks.status, 'in', []).count(db)).toBe(0);
-      expect(await from(tasks).where(tasks.status, 'not in', []).count(db)).toBe(4);
+    test('IN an empty list matches nothing, and NOT IN it matches everything', async () => {
+      expect(await from(tasks).where(tasks.status, 'IN', []).count(db)).toBe(0);
+      expect(await from(tasks).where(tasks.status, 'NOT IN', []).count(db)).toBe(4);
     });
 
-    test('between and not between, bounds included', async () => {
-      expect(await ids(from(tasks).where(tasks.attempts, 'between', [1, 3]).all(db))).toEqual(idsOf(1, 2, 3));
-      expect(await ids(from(tasks).where(tasks.attempts, 'not between', [1, 3]).all(db))).toEqual(idsOf(0));
-      expect(await ids(from(tasks).where(tasks.scheduledTo, 'between', [minutesAgo(2), new Date()]).all(db))).toEqual(idsOf(0, 3));
+    test('BETWEEN and NOT BETWEEN, bounds included', async () => {
+      expect(await ids(from(tasks).where(tasks.attempts, 'BETWEEN', [1, 3]).all(db))).toEqual(idsOf(1, 2, 3));
+      expect(await ids(from(tasks).where(tasks.attempts, 'NOT BETWEEN', [1, 3]).all(db))).toEqual(idsOf(0));
+      expect(await ids(from(tasks).where(tasks.scheduledTo, 'BETWEEN', [minutesAgo(2), new Date()]).all(db))).toEqual(idsOf(0, 3));
     });
 
-    test('is distinct from and is not distinct from treat nulls as values', async () => {
+    test('IS DISTINCT FROM and IS NOT DISTINCT FROM treat nulls as values', async () => {
       const [child] = await into(tasks).values(task({ parentId: rows[0]!.id })).insert(db);
       const parentId = rows[0]!.id;
 
       // unlike `!=` and `=`, which never match nulls
       expect(await from(tasks).where(tasks.parentId, '!=', parentId).count(db)).toBe(0);
-      expect(await from(tasks).where(tasks.parentId, 'is distinct from', parentId).count(db)).toBe(4);
-      expect(await ids(from(tasks).where(tasks.parentId, 'is not distinct from', parentId).all(db))).toEqual([child!.id]);
-      expect(await from(tasks).where(tasks.parentId, 'is not distinct from', null).count(db)).toBe(4);
-      expect(await from(tasks).where(tasks.parentId, 'is distinct from', tasks.id).count(db)).toBe(5);
+      expect(await from(tasks).where(tasks.parentId, 'IS DISTINCT FROM', parentId).count(db)).toBe(4);
+      expect(await ids(from(tasks).where(tasks.parentId, 'IS NOT DISTINCT FROM', parentId).all(db))).toEqual([child!.id]);
+      expect(await from(tasks).where(tasks.parentId, 'IS NOT DISTINCT FROM', null).count(db)).toBe(4);
+      expect(await from(tasks).where(tasks.parentId, 'IS DISTINCT FROM', tasks.id).count(db)).toBe(5);
     });
 
     test('reject values of the wrong shape', () => {
-      expect(() => from(tasks).where(tasks.status, 'in', JSON.parse('"queued"'))).toThrow('"in" takes a list of values, got queued');
-      expect(() => from(tasks).where(tasks.attempts, 'between', JSON.parse('[1]'))).toThrow('"between" takes a [low, high] pair, got [1]');
-      expect(() => from(tasks).where(tasks.id, 'ilike', 'x')).toThrow('"ilike" only takes text columns, "tasks.id" isn\'t one');
-      expect(() => from(tasks).where(tasks.status, 'in', tasks.status as never)).toThrow('"in" takes a value, not another operand');
+      expect(() => from(tasks).where(tasks.status, 'IN', JSON.parse('"queued"'))).toThrow('"IN" takes a list of values, got queued');
+      expect(() => from(tasks).where(tasks.attempts, 'BETWEEN', JSON.parse('[1]'))).toThrow('"BETWEEN" takes a [low, high] pair, got [1]');
+      expect(() => from(tasks).where(tasks.id, 'ILIKE', 'x')).toThrow('"ILIKE" only takes text columns, "tasks.id" isn\'t one');
+      expect(() => from(tasks).where(tasks.status, 'IN', tasks.status as never)).toThrow('"IN" takes a value, not another operand');
     });
   });
 
@@ -159,7 +159,7 @@ export const typeChecks = async (db: Database) => {
 
   from(tasks).where(expr.or([
     expr.and([expr(tasks.status, '=', 'scheduled'), expr(tasks.scheduledTo, '<', new Date())]),
-    expr(tasks.parentId, 'is', null),
+    expr(tasks.parentId, 'IS', null),
   ]));
 
   // @ts-expect-error enum values are checked
@@ -169,7 +169,7 @@ export const typeChecks = async (db: Database) => {
   from(tasks).where(tasks.scheduledTo, '<', 'yesterday');
 
   // @ts-expect-error only nullable columns can be compared with null
-  from(tasks).where(tasks.status, 'is', null);
+  from(tasks).where(tasks.status, 'IS', null);
 
   // @ts-expect-error references must be to the query's table
   from(tasks).where(users.name, '=', 'Jane');
@@ -177,41 +177,41 @@ export const typeChecks = async (db: Database) => {
   // @ts-expect-error compared columns must have compatible types
   from(tasks).where(tasks.attempts, '=', tasks.status);
 
-  // @ts-expect-error like takes string patterns
-  from(tasks).where(tasks.status, 'like', 1);
+  // @ts-expect-error LIKE takes string patterns
+  from(tasks).where(tasks.status, 'LIKE', 1);
 
-  // @ts-expect-error like takes string values only
-  from(tasks).where(tasks.attempts, 'like', '1%');
+  // @ts-expect-error LIKE takes string values only
+  from(tasks).where(tasks.attempts, 'LIKE', '1%');
 
-  // @ts-expect-error like doesn't take dates
-  from(tasks).where(tasks.scheduledTo, 'not like', '2026%');
+  // @ts-expect-error LIKE doesn't take dates
+  from(tasks).where(tasks.scheduledTo, 'NOT LIKE', '2026%');
 
   from(tasks).where(expr.or([
-    expr(tasks.status, 'in', ['queued', 'running']),
-    expr(tasks.scheduledTo, 'between', [new Date(0), new Date()]),
-    expr(tasks.parentId, 'is distinct from', tasks.id),
+    expr(tasks.status, 'IN', ['queued', 'running']),
+    expr(tasks.scheduledTo, 'BETWEEN', [new Date(0), new Date()]),
+    expr(tasks.parentId, 'IS DISTINCT FROM', tasks.id),
   ]));
 
-  // @ts-expect-error in checks every value
-  from(tasks).where(tasks.status, 'in', ['queued', 'nope']);
+  // @ts-expect-error IN checks every value
+  from(tasks).where(tasks.status, 'IN', ['queued', 'nope']);
 
-  // @ts-expect-error in takes a list
-  from(tasks).where(tasks.status, 'in', 'queued');
+  // @ts-expect-error IN takes a list
+  from(tasks).where(tasks.status, 'IN', 'queued');
 
-  // @ts-expect-error between takes a pair of the column's type
-  from(tasks).where(tasks.attempts, 'between', ['1', '3']);
+  // @ts-expect-error BETWEEN takes a pair of the column's type
+  from(tasks).where(tasks.attempts, 'BETWEEN', ['1', '3']);
 
-  // @ts-expect-error between takes exactly two values
-  from(tasks).where(tasks.attempts, 'between', [1, 2, 3]);
+  // @ts-expect-error BETWEEN takes exactly two values
+  from(tasks).where(tasks.attempts, 'BETWEEN', [1, 2, 3]);
 
-  // @ts-expect-error ilike takes string values only
-  from(tasks).where(tasks.attempts, 'ilike', '1%');
+  // @ts-expect-error ILIKE takes string values only
+  from(tasks).where(tasks.attempts, 'ILIKE', '1%');
 
-  // @ts-expect-error is distinct from compares compatible columns
-  from(tasks).where(tasks.parentId, 'is distinct from', tasks.attempts);
+  // @ts-expect-error IS DISTINCT FROM compares compatible columns
+  from(tasks).where(tasks.parentId, 'IS DISTINCT FROM', tasks.attempts);
 
   // @ts-expect-error only comparisons take another column
-  from(tasks).where(tasks.status, 'in', tasks.status);
+  from(tasks).where(tasks.status, 'IN', tasks.status);
 
   // @ts-expect-error unknown operators are rejected
   from(tasks).where(tasks.attempts, '~', 1);

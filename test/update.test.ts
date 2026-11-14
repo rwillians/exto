@@ -43,7 +43,7 @@ suite('update', (fresh) => {
 
     await from(tasks).update(db, { set: { parentId: null } });
 
-    expect(await from(tasks).where(tasks.parentId, 'is', null).count(db)).toBe(3);
+    expect(await from(tasks).where(tasks.parentId, 'IS', null).count(db)).toBe(3);
   });
 
   test('returns every column of the updated rows by default', async () => {
