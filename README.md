@@ -236,10 +236,10 @@ await queued.exists(db); // → boolean
 await queued.count(db);  // → number
 ```
 
-| operator                               | value             |
-| :------------------------------------- | :---------------- |
-| `'='` `'!='` `'<'` `'<='` `'>'` `'>='` | the column's type |
-| `'is'` `'is not'`                      | `null`            |
+| operator                               | value                                                   |
+| :------------------------------------- | :------------------------------------------------------ |
+| `'='` `'!='` `'<'` `'<='` `'>'` `'>='` | the column's type, or another column                    |
+| `'is'` `'is not'`                      | `null` (optional columns), `true` or `false` (booleans) |
 
 ### Picking columns
 

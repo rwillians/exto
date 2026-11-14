@@ -240,10 +240,13 @@ type ColumnRef<A extends string = string, K extends string = string, V = unknown
   readonly [KEY]: K; // type only
 };
 
+type NullOf<C extends Column> = C extends { nullable: true } ? null : never;
+
 // the fields of `embedded.one()` columns are referenced as properties of
-// the column's reference, e.g. `tasks.payload.kind`
-type FieldRefs<A extends string, C extends Column> = C extends { fields: infer F extends Columns }
-  ? C extends { many: true } ? {} : { readonly [K in keyof F & string]: Operand<A, F[K]['output'], A> & FieldRefs<A, F[K]> }
+// the column's reference, e.g. `tasks.payload.kind`. `Null` is null when
+// any column they're nested in is optional, since they read null then too
+type FieldRefs<A extends string, C extends Column, Null = NullOf<C>> = C extends { fields: infer F extends Columns }
+  ? C extends { many: true } ? {} : { readonly [K in keyof F & string]: Operand<A, F[K]['output'] | Null, A> & FieldRefs<A, F[K], Null | NullOf<F[K]>> }
   : {};
 
 type RefTo<A extends string, K extends string, C extends Column> = ColumnRef<A, K, C['output']> & FieldRefs<A, C>;
@@ -499,7 +502,7 @@ const renderNode = (b: SqlBuilder, node: Node): SqlBuilder => {
     case 'compare': {
       const { lhs, op, rhs } = node;
       renderNode(b, lhs).push(' ', op.toUpperCase(), ' ');
-      if (op === 'is' || op === 'is not') return b.push('NULL');
+      if (op === 'is' || op === 'is not') return b.push(String((rhs as { value: unknown }).value).toUpperCase());
       if (rhs.kind === 'value') return b.param(encodeFor(b.dialect, lhs, rhs.value));
       return renderNode(b, rhs);
     }
@@ -557,8 +560,10 @@ type ValueIn<O, N extends string> = [NullsOf<O> & N] extends [never] ? ValueOf<O
 
 type ComparisonOp = '=' | '!=' | '<' | '<=' | '>' | '>=';
 
+// `is` and `is not` take null (when the value can be null) and booleans
+// (when it's a boolean)
 type ValueFor<V, O extends Op> = O extends 'is' | 'is not'
-  ? null extends V ? null : never
+  ? (null extends V ? null : never) | (boolean extends NonNullable<V> ? boolean : never)
   : NonNullable<V>;
 
 // comparisons also take another operand, as long as its values are compatible
@@ -568,12 +573,17 @@ type RhsFor<V, O extends Op, A extends string = string> =
 
 type Condition<A extends string = string> = Operand<A, boolean, never>;
 
-const compare = (lhs: Operand, op: Op, rhs: unknown): Node => ({
-  kind: 'compare',
-  lhs: lhs[NODE],
-  op,
-  rhs: isOperand(rhs) ? rhs[NODE] : { kind: 'value', value: rhs },
-});
+const compare = (lhs: Operand, op: Op, rhs: unknown): Node => {
+  const tests = op === 'is' || op === 'is not';
+  if (tests && rhs !== null && rhs !== true && rhs !== false) throw new Error(`"${op}" takes null, true or false, got ${String(rhs)}`);
+
+  return {
+    kind: 'compare',
+    lhs: lhs[NODE],
+    op,
+    rhs: isOperand(rhs) ? rhs[NODE] : { kind: 'value', value: rhs },
+  };
+};
 
 // a value, or another operand: one generic for both would infer it as its
 // constraint, losing the operand's aliases
