@@ -246,6 +246,22 @@ await queued.count(db);  // → number
 | `'ILIKE'` `'NOT ILIKE'`                       | a case-insensitive `string` pattern (text columns)      |
 | `'IS'` `'IS NOT'`                             | `null` (optional columns), `true` or `false` (booleans) |
 
+```ts
+const lastWeek = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+
+await from(tasks).where(tasks.status, 'IN', ['queued', 'running']).all(db);
+await from(tasks).where(tasks.status, 'NOT IN', ['done']).all(db);
+
+await from(tasks).where(tasks.scheduledTo, 'BETWEEN', [lastWeek, new Date()]).all(db);
+await from(tasks).where(tasks.attempts, 'NOT BETWEEN', [1, 3]).all(db);
+
+await from(tasks).where(tasks.payload.kind, 'LIKE', 'Prune%').all(db);
+await from(tasks).where(tasks.payload.kind, 'NOT ILIKE', '%test%').all(db);
+
+await from(tasks).where(tasks.parentId, 'IS NOT', null).all(db);
+await from(tasks).where(tasks.parentId, 'IS DISTINCT FROM', id).all(db); // rows without a parent too
+```
+
 `LIKE` is case-sensitive on postgres (except for `t.citext()` columns), and
 case-insensitive for ASCII letters on sqlite. Use `ILIKE` to ignore case on
 both.
