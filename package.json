@@ -1,0 +1,22 @@
+{
+  "name": "@rwillians/exto",
+  "version": "0.1.2",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit --runExternalCode"
+  },
+  "typescript": {
+    "contentMapper": {
+      "exec": [
+        "bun",
+        "src/mapper.ts"
+      ]
+    }
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^7.1.0-dev.20261114.1",
+    "@rwillians/exto": "link:."
+  }
+}
