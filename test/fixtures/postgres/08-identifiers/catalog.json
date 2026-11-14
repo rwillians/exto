@@ -1,0 +1,51 @@
+{
+  "enums": {},
+  "tables": {
+    "UserProfiles": {
+      "columns": {
+        "Id": {
+          "type": "bigint",
+          "nullable": false
+        },
+        "displayname": {
+          "type": "text",
+          "nullable": true
+        },
+        "order": {
+          "type": "integer",
+          "nullable": true
+        },
+        "user": {
+          "type": "text",
+          "nullable": true
+        },
+        "with space": {
+          "type": "text",
+          "nullable": true
+        },
+        "quote\"d": {
+          "type": "text",
+          "nullable": true
+        },
+        "Bio": {
+          "type": "text",
+          "nullable": true
+        }
+      },
+      "primaryKey": [
+        "Id"
+      ],
+      "unique": []
+    },
+    "qualified": {
+      "columns": {
+        "id": {
+          "type": "bigint",
+          "nullable": true
+        }
+      },
+      "primaryKey": [],
+      "unique": []
+    }
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "enums": {},
+  "tables": {
+    "notes": {
+      "columns": {
+        "id": {
+          "type": "bigint",
+          "nullable": false
+        },
+        "body": {
+          "type": "text",
+          "nullable": false,
+          "default": true
+        },
+        "title": {
+          "type": "text",
+          "nullable": true,
+          "default": true
+        },
+        "footer": {
+          "type": "text",
+          "nullable": true,
+          "default": true
+        },
+        "e": {
+          "type": "text",
+          "nullable": true,
+          "default": true
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "unique": []
+    },
+    "more": {
+      "columns": {
+        "id": {
+          "type": "bigint",
+          "nullable": true
+        },
+        "label": {
+          "type": "text",
+          "nullable": true
+        }
+      },
+      "primaryKey": [],
+      "unique": []
+    }
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "enums": {
+    "status": [
+      "scheduled",
+      "queued",
+      "running",
+      "succeeded",
+      "failed"
+    ],
+    "Mood": []
+  },
+  "tables": {
+    "jobs": {
+      "columns": {
+        "id": {
+          "type": "bigint",
+          "nullable": false
+        },
+        "status": {
+          "type": "status",
+          "nullable": false,
+          "default": true
+        },
+        "previous": {
+          "type": "status",
+          "nullable": true
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "unique": []
+    }
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "enums": {},
+  "tables": {
+    "accounts": {
+      "columns": {
+        "id": {
+          "type": "bigint",
+          "nullable": false
+        },
+        "email": {
+          "type": "text",
+          "nullable": false
+        },
+        "tenant": {
+          "type": "bigint",
+          "nullable": false
+        },
+        "handle": {
+          "type": "text",
+          "nullable": true
+        },
+        "deleted_at": {
+          "type": "timestamp with time zone",
+          "nullable": true
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "unique": [
+        [
+          "tenant",
+          "email"
+        ],
+        [
+          "email"
+        ]
+      ]
+    }
+  }
+}

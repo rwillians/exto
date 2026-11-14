@@ -5,12 +5,16 @@
   "type": "module",
   "typescript": {
     "contentMapper": {
-      "exec": ["node", "src/mapper.ts"],
+      "exec": [
+        "node",
+        "src/mapper.ts"
+      ],
       "compilerOptions": []
     }
   },
   "scripts": {
-    "typecheck": "tsc --noEmit --runExternalCode"
+    "typecheck": "tsc --noEmit --runExternalCode",
+    "oracle": "node test/postgres-oracle.ts"
   },
   "devDependencies": {
     "@rwillians/exto": "file:.",

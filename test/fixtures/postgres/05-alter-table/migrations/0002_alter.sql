@@ -1,0 +1,12 @@
+alter table users add column created_at timestamptz not null default now();
+alter table users add bio text;
+alter table users add column if not exists bio text;
+alter table users drop column nickname;
+alter table users drop column if exists nonexistent;
+alter table users rename column name to full_name;
+alter table users alter column full_name set not null;
+alter table users alter column age type bigint;
+alter table users alter column age set data type text using age::text;
+alter table users alter column age set default '0';
+alter table users alter column age drop default;
+alter table users drop column email;

@@ -1,0 +1,64 @@
+{
+  "enums": {},
+  "tables": {
+    "people": {
+      "columns": {
+        "id": {
+          "type": "bigint",
+          "nullable": false
+        },
+        "full_name": {
+          "type": "text",
+          "nullable": true
+        },
+        "age": {
+          "type": "text",
+          "nullable": true
+        },
+        "created_at": {
+          "type": "timestamp with time zone",
+          "nullable": false,
+          "default": true
+        },
+        "bio": {
+          "type": "text",
+          "nullable": true,
+          "default": true
+        },
+        "handle": {
+          "type": "text",
+          "nullable": true
+        },
+        "score": {
+          "type": "integer",
+          "nullable": false,
+          "default": true
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "unique": [
+        [
+          "handle"
+        ]
+      ]
+    },
+    "tags": {
+      "columns": {
+        "label": {
+          "type": "text",
+          "nullable": false
+        },
+        "kind": {
+          "type": "text",
+          "nullable": false
+        }
+      },
+      "primaryKey": [
+        "label"
+      ],
+      "unique": []
+    }
+  }
+}

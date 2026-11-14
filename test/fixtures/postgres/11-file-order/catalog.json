@@ -1,0 +1,21 @@
+{
+  "enums": {},
+  "tables": {
+    "things": {
+      "columns": {
+        "id": {
+          "type": "bigint",
+          "nullable": false
+        },
+        "from_2": {
+          "type": "text",
+          "nullable": true
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "unique": []
+    }
+  }
+}

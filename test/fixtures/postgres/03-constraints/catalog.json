@@ -1,0 +1,59 @@
+{
+  "enums": {},
+  "tables": {
+    "tokens": {
+      "columns": {
+        "value": {
+          "type": "text",
+          "nullable": false
+        },
+        "owner": {
+          "type": "bigint",
+          "nullable": false
+        }
+      },
+      "primaryKey": [
+        "value"
+      ],
+      "unique": [
+        [
+          "owner"
+        ]
+      ]
+    },
+    "memberships": {
+      "columns": {
+        "org_id": {
+          "type": "bigint",
+          "nullable": false
+        },
+        "user_id": {
+          "type": "bigint",
+          "nullable": false
+        },
+        "role": {
+          "type": "text",
+          "nullable": true
+        },
+        "slug": {
+          "type": "text",
+          "nullable": true
+        },
+        "invited_by": {
+          "type": "bigint",
+          "nullable": true
+        }
+      },
+      "primaryKey": [
+        "org_id",
+        "user_id"
+      ],
+      "unique": [
+        [
+          "org_id",
+          "slug"
+        ]
+      ]
+    }
+  }
+}

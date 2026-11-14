@@ -1,0 +1,130 @@
+{
+  "enums": {},
+  "tables": {
+    "samples": {
+      "columns": {
+        "a": {
+          "type": "integer",
+          "nullable": true
+        },
+        "b": {
+          "type": "smallint",
+          "nullable": true
+        },
+        "c": {
+          "type": "integer",
+          "nullable": true
+        },
+        "d": {
+          "type": "bigint",
+          "nullable": true
+        },
+        "e": {
+          "type": "smallint",
+          "nullable": true
+        },
+        "f": {
+          "type": "real",
+          "nullable": true
+        },
+        "g": {
+          "type": "double precision",
+          "nullable": true
+        },
+        "h": {
+          "type": "real",
+          "nullable": true
+        },
+        "i": {
+          "type": "double precision",
+          "nullable": true
+        },
+        "j": {
+          "type": "numeric",
+          "nullable": true
+        },
+        "k": {
+          "type": "numeric(5,0)",
+          "nullable": true
+        },
+        "l": {
+          "type": "boolean",
+          "nullable": true
+        },
+        "m": {
+          "type": "character varying",
+          "nullable": true
+        },
+        "n": {
+          "type": "character varying(10)",
+          "nullable": true
+        },
+        "o": {
+          "type": "character(3)",
+          "nullable": true
+        },
+        "p": {
+          "type": "character(1)",
+          "nullable": true
+        },
+        "q": {
+          "type": "timestamp without time zone",
+          "nullable": true
+        },
+        "r": {
+          "type": "timestamp without time zone",
+          "nullable": true
+        },
+        "s": {
+          "type": "timestamp with time zone",
+          "nullable": true
+        },
+        "t": {
+          "type": "time without time zone",
+          "nullable": true
+        },
+        "u": {
+          "type": "time with time zone",
+          "nullable": true
+        },
+        "v": {
+          "type": "date",
+          "nullable": true
+        },
+        "w": {
+          "type": "interval",
+          "nullable": true
+        },
+        "x": {
+          "type": "bytea",
+          "nullable": true
+        },
+        "y": {
+          "type": "json",
+          "nullable": true
+        },
+        "z": {
+          "type": "integer[]",
+          "nullable": true
+        },
+        "ab": {
+          "type": "integer",
+          "nullable": false,
+          "default": true
+        },
+        "ac": {
+          "type": "bigint",
+          "nullable": false,
+          "default": true
+        },
+        "ad": {
+          "type": "smallint",
+          "nullable": false,
+          "default": true
+        }
+      },
+      "primaryKey": [],
+      "unique": []
+    }
+  }
+}

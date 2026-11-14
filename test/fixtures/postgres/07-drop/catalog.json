@@ -1,0 +1,17 @@
+{
+  "enums": {},
+  "tables": {
+    "keep": {
+      "columns": {
+        "id": {
+          "type": "bigint",
+          "nullable": false
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "unique": []
+    }
+  }
+}

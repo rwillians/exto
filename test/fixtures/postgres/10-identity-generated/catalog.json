@@ -1,0 +1,41 @@
+{
+  "enums": {},
+  "tables": {
+    "events": {
+      "columns": {
+        "id": {
+          "type": "bigint",
+          "nullable": false,
+          "identity": "always"
+        },
+        "seq": {
+          "type": "integer",
+          "nullable": false,
+          "identity": "by default"
+        },
+        "ordinal": {
+          "type": "bigint",
+          "nullable": false,
+          "identity": "by default"
+        },
+        "price": {
+          "type": "numeric(10,2)",
+          "nullable": false
+        },
+        "quantity": {
+          "type": "integer",
+          "nullable": false
+        },
+        "total": {
+          "type": "numeric",
+          "nullable": true,
+          "generated": true
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "unique": []
+    }
+  }
+}
