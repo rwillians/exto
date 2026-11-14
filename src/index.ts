@@ -176,11 +176,16 @@ type NumericKeys<C extends Columns> = {
   [K in keyof C]: C[K] extends OmitOnUpdate ? never : C[K]['type'] extends NumericType ? K : never;
 }[keyof C];
 
+// type only: TypeScript leaves class methods out of a spread's type, so
+// declaring `as` as one keeps `{ ...table }` typed as just the columns, the
+// way it is at runtime
+declare class Aliasable<N extends string, C extends Columns> {
+  as<B extends string>(alias: B): DefinedTable<N, B, C>;
+}
+
 type DefinedTable<N extends string, A extends string, C extends Columns> = Table<N, A, C> & {
   readonly [K in keyof C]: ColumnRef<A, C[K]>;
-} & {
-  as: <B extends string>(alias: B) => DefinedTable<N, B, C>;
-};
+} & Aliasable<N, C>;
 
 // `as` aliases the table
 const RESERVED = ['as'] as const;
@@ -290,8 +295,11 @@ const decode = (dialect: Dialect, col: Column, value: unknown) => value === null
   ? null
   : dialect.codecs[col.type].decode(value);
 
-const decoder = (dialect: Dialect, cols: Column[]) => (row: Row) => Object.fromEntries(
-  cols.map(col => [col.key, decode(dialect, col, row[col.key])] as const),
+// a field is a column read under a key of its own
+type Field = [key: string, col: Column];
+
+const decoder = (dialect: Dialect, fields: Field[]) => (row: Row) => Object.fromEntries(
+  fields.map(([key, col]) => [key, decode(dialect, col, row[key])] as const),
 );
 
 const run = async (db: IDatabase, { sql, params }: Statement) => {
@@ -334,7 +342,7 @@ const runReturning = async (db: IDatabase, b: SqlBuilder, table: Table, returnin
   b.push(' RETURNING ').join(cols, ', ', col => b.push(ref(col), ' AS ', quote(col.key)));
 
   const rows = await run(db, b.build());
-  return rows.map(decoder(db.dialect, cols));
+  return rows.map(decoder(db.dialect, cols.map(col => [col.key, col])));
 };
 
 // ─── where ───────────────────────────────────────────────────────────────────
@@ -547,7 +555,7 @@ type Direction = 'ASC' | 'DESC';
 
 type Query<T extends Table> = {
   table: T;
-  select?: string[];
+  select?: Field[];
   where: Condition[];
   orderBy: [Column, Direction][];
   limit?: number;
@@ -558,21 +566,33 @@ type Keys<T extends Table> = keyof ColumnsOf<T> & string;
 
 type OrderKey<T extends Table, A extends string> = Keys<T> | ColumnRef<A>;
 
-// `A` is the query's alias, and `S` holds the selected fields, every field
+// the row a projection reads, under the projection's own keys
+type Projected<P> = Expand<{
+  [K in keyof P & string]: P[K] extends ColumnRef<string, infer C> ? C['output'] : never;
+}>;
+
+// `A` is the query's alias, and `R` the row it reads, a whole row of the table
 // unless `select` says otherwise
-class QueryBuilder<T extends Table, A extends string = T[typeof ALIAS], S extends Keys<T> = Keys<T>> {
+class QueryBuilder<T extends Table, A extends string = T[typeof ALIAS], R = InferForSelect<ColumnsOf<T>>> {
   constructor(private readonly query: Query<T>) { }
 
-  select<K extends Keys<T>>(keys: K[]) {
-    return new QueryBuilder<T, A, K>({ ...this.query, select: keys });
+  select<K extends Keys<T>>(keys: K[]): QueryBuilder<T, A, Expand<Pick<InferForSelect<ColumnsOf<T>>, K>>>;
+  select<P extends Record<string, ColumnRef<A>>>(projection: P): QueryBuilder<T, A, Projected<P>>;
+  select(selection: string[] | Record<string, ColumnRef>) {
+    const { table } = this.query;
+    const fields: Field[] = Array.isArray(selection)
+      ? selection.map(key => [key, columnOf(table, key)])
+      : Object.entries(selection).map(([key, ref]) => [key, columnIn(table, ref)]);
+
+    return new QueryBuilder<T, A, unknown>({ ...this.query, select: fields });
   }
 
-  where<K extends Keys<T>, O extends Op>(key: K, op: O, value: ValueFor<ColumnsOf<T>[K]['output'], O>): QueryBuilder<T, A, S>;
-  where<R extends ColumnRef<A>, O extends Op>(lhs: R, op: O, rhs: RhsFor<R['col']['output'], O, A>): QueryBuilder<T, A, S>;
-  where(expr: Expr<ColumnsOf<T>, A>): QueryBuilder<T, A, S>;
+  where<K extends Keys<T>, O extends Op>(key: K, op: O, value: ValueFor<ColumnsOf<T>[K]['output'], O>): QueryBuilder<T, A, R>;
+  where<L extends ColumnRef<A>, O extends Op>(lhs: L, op: O, rhs: RhsFor<L['col']['output'], O, A>): QueryBuilder<T, A, R>;
+  where(expr: Expr<ColumnsOf<T>, A>): QueryBuilder<T, A, R>;
   where(...args: [string | ColumnRef, Op, unknown] | [ExprNode]) {
     const node = args.length === 1 ? args[0] : { lhs: args[0], op: args[1], value: args[2] };
-    return new QueryBuilder<T, A, S>({ ...this.query, where: [...this.query.where, toCondition(this.query.table, node)] });
+    return new QueryBuilder<T, A, R>({ ...this.query, where: [...this.query.where, toCondition(this.query.table, node)] });
   }
 
   orderBy(keys: (OrderKey<T, A> | [OrderKey<T, A>, Direction])[]) {
@@ -580,25 +600,23 @@ class QueryBuilder<T extends Table, A extends string = T[typeof ALIAS], S extend
       ? [columnIn(this.query.table, key[0]), key[1]] as [Column, Direction]
       : [columnIn(this.query.table, key), 'ASC'] as [Column, Direction]);
 
-    return new QueryBuilder<T, A, S>({ ...this.query, orderBy: [...this.query.orderBy, ...orderBy] });
+    return new QueryBuilder<T, A, R>({ ...this.query, orderBy: [...this.query.orderBy, ...orderBy] });
   }
 
   limit(n: number) {
-    return new QueryBuilder<T, A, S>({ ...this.query, limit: n });
+    return new QueryBuilder<T, A, R>({ ...this.query, limit: n });
   }
 
   offset(n: number) {
-    return new QueryBuilder<T, A, S>({ ...this.query, offset: n });
+    return new QueryBuilder<T, A, R>({ ...this.query, offset: n });
   }
 
   async all(db: IDatabase) {
     const { table, select } = this.query;
-    const cols = select
-      ? select.map(key => columnOf(table, key))
-      : columnsOf(table);
+    const fields = select ?? columnsOf(table).map((col): Field => [col.key, col]);
 
-    const rows = await run(db, this.renderSelect(new SqlBuilder(db.dialect), cols).build());
-    return rows.map(decoder(db.dialect, cols)) as Expand<Pick<InferForSelect<ColumnsOf<T>>, S>>[];
+    const rows = await run(db, this.renderSelect(new SqlBuilder(db.dialect), fields).build());
+    return rows.map(decoder(db.dialect, fields)) as R[];
   }
 
   async one(db: IDatabase) {
@@ -652,7 +670,7 @@ class QueryBuilder<T extends Table, A extends string = T[typeof ALIAS], S extend
     return await runReturning(db, b, table, returning);
   }
 
-  private renderSelect(b: SqlBuilder, cols: Column[]) {
+  private renderSelect(b: SqlBuilder, fields: Field[]) {
     const { table, where, orderBy, limit, offset } = this.query;
     const alias = table[ALIAS];
 
@@ -660,8 +678,8 @@ class QueryBuilder<T extends Table, A extends string = T[typeof ALIAS], S extend
 
     // an empty select list isn't valid SQL, but each matching row still needs
     // an (empty) object
-    if (cols.length === 0) b.push('1');
-    else b.join(cols, ', ', col => b.push(ref(col, alias), ' AS ', quote(col.key)));
+    if (fields.length === 0) b.push('1');
+    else b.join(fields, ', ', ([key, col]) => b.push(ref(col, alias), ' AS ', quote(key)));
 
     b.push(' FROM ', quote(table[NAME]), ' AS ', quote(alias));
 

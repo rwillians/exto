@@ -272,6 +272,17 @@ Columns compare with `=`, `!=`, `<`, `<=`, `>` and `>=`, as long as their
 types match. `tasks.as('t')` references the same columns under another alias
 (`FROM "tasks" AS "t"`), which is why `as` can't be a column's name.
 
+`.select()` also takes references, under keys of your choosing. Spreading a
+table copies just its columns:
+
+```ts
+await from(tasks).select({ taskId: tasks.id, when: tasks.scheduledAt }).all(db);
+// → { taskId: string, when: Date }[]
+
+await from(tasks).select({ ...tasks, parent: tasks.parentId }).all(db);
+// → (Task & { parent: string | null })[]
+```
+
 
 ## Update
 
@@ -345,8 +356,8 @@ reads from one table only, so joins aren't possible yet. Neither is nesting one
 query inside another, whether as a subquery (`WHERE id IN (SELECT ...)`) or as
 a common table expression (`WITH ... SELECT`).
 
-Selects return columns as they're stored: `.select()` takes column keys only,
-so computed values such as `attempts * 2` can't be selected. Aggregation stops
+Selects return columns as they're stored: `.select()` takes columns only, so
+computed values such as `attempts * 2` can't be selected. Aggregation stops
 at `.count()`, too. There's no `.groupBy()` to group rows, and no `.having()`
 to filter those groups.
 

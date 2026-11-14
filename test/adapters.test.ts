@@ -429,6 +429,19 @@ for (const adapter of adapters) {
         expect(grouped.map(task => task.id).sort()).toEqual([first!.id, second!.id, third!.id].sort());
       });
 
+      test('selects column references under keys of its own', async () => {
+        const [, , third] = await insertTasks();
+        const t = tasks.as('t');
+
+        const renamed = await from(tasks).where('type', '=', 'Other').select({ taskId: tasks.id, when: tasks.scheduledAt }).all(db);
+
+        expect(renamed).toEqual([{ taskId: third!.id, when: new Date('2099-01-01T00:00:00Z') }]);
+        expect(sqls.at(-1)).toStartWith('SELECT "tasks"."id" AS "taskId", "tasks"."scheduled_at" AS "when" FROM "tasks" AS "tasks"');
+        expect(await from(t).where(t.type, '=', 'Other').select({ ...t }).one(db)).toEqual(third!);
+        expect(await from(t).select({}).all(db)).toEqual([{}, {}, {}]);
+        expect(await from(t).select({ id: t.id }).where('type', '=', 'Other').count(db)).toBe(1);
+      });
+
       test('rejects references to another alias or table', () => {
         const t = tasks.as('t');
 
@@ -436,6 +449,7 @@ for (const adapter of adapters) {
         expect(() => from(tasks).where(t.createdAt as any, '<', t.scheduledAt as any)).toThrow(`"t.createdAt" isn't part of the query`);
         expect(() => from(t).where(expr(things.as('t').body as any, '=', 'x'))).toThrow(`"t.body" isn't part of the query`);
         expect(() => from(t).orderBy([tasks.as('u').id as any])).toThrow(`"u.id" isn't part of the query`);
+        expect(() => from(t).select({ id: tasks.id as any })).toThrow(`"tasks.id" isn't part of the query`);
       });
     });
 

@@ -254,10 +254,20 @@ const g1: number = await from(tasks)
 
 const t0 = tasks.as('t0');
 
-const h1 = await from(t0)
+const h1: Task[] = await from(t0)
   .where(t0.status, '=', 'scheduled')
   .all(db);
 
-const h2 = await from(tasks)
+const h2: Task[] = await from(tasks)
   .where(tasks.attempts, '=', tasks.maxAttempts)
+  .all(db);
+
+// ─── column ref selection ────────────────────────────────────────────────────
+
+const i1: Pick<Task, 'id'>[] = await from(tasks)
+  .select({ id: tasks.id })
+  .all(db);
+
+const i2: Task[] = await from(tasks)
+  .select({ ...tasks })
   .all(db);

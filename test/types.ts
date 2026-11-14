@@ -1,5 +1,6 @@
 // type-level assertions, checked by `bun check` (never executed)
 import { create, expr, from, into, t, type IDatabase, type Infer } from '../src';
+import type { Expand } from '../src/utils';
 import { tasks, things } from './fixtures';
 
 type Equals<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
@@ -203,6 +204,24 @@ export const checks = async (db: IDatabase) => {
     .where(t0.parentId, 'is', null)
     .where(expr.or([expr(t0.status, 'in', ['queued']), expr(t0.attempts, '>', t0.attempts), expr('type', '=', 'a')]))
     .orderBy([t0.createdAt, [t0.scheduledAt, 'DESC'], 'attempts']);
+
+  const projected = await from(tasks).select({ taskId: tasks.id, when: tasks.scheduledAt }).all(db);
+  assert<Equals<typeof projected, { taskId: string; when: Date }[]>>();
+
+  const spread = { ...tasks };
+  assert<Equals<Exclude<keyof typeof spread, symbol>, keyof Infer<'select', typeof tasks>>>();
+
+  const spreadAll = await from(tasks).select({ ...tasks }).all(db);
+  assert<Equals<typeof spreadAll, Infer<'select', typeof tasks>[]>>();
+
+  const spreadOne = await from(t0).select({ ...t0, parent: t0.parentId }).one(db);
+  assert<Equals<typeof spreadOne, Expand<Infer<'select', typeof tasks> & { parent: string | null }> | null>>();
+
+  // @ts-expect-error selected references must be to the query's alias
+  from(t0).select({ id: t1.id });
+
+  // @ts-expect-error a projection's values are column references
+  from(tasks).select({ id: 'id' });
 
   // @ts-expect-error references must be to the query's alias
   from(t0).where(t1.status, '=', 'queued');
