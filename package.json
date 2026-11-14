@@ -1,7 +1,7 @@
 {
   "name": "@rwillians/exto",
   "description": "A teeny tiny, type-safe query builder for Bun, with adapters for SQLite and PostgreSQL.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "author": "Rafael Willians <me@rwillians.com>",
   "license": "MIT",
   "publishConfig": {
