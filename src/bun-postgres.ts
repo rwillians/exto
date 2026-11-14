@@ -58,6 +58,7 @@ const dialect: Dialect = {
     ? 'GENERATED ALWAYS AS IDENTITY'
     : undefined,
   json,
+  operators: {},
   codecs: {
     BIGINT:    { encode: (value: bigint) => value, decode: (value: string | bigint) => BigInt(value) },
     BINARY:    { encode: (value: Uint8Array) => value, decode: (value: Uint8Array) => new Uint8Array(value) },

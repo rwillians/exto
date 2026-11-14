@@ -42,6 +42,8 @@ const dialect: Dialect = {
     if (col.type === 'SEQUENCE') throw new Error(`SQLite can only generate sequences for primary keys, column "${col.name}" isn't one`);
     return undefined;
   },
+  // LIKE already ignores the case of ASCII letters
+  operators: { 'ilike': 'LIKE', 'not ilike': 'NOT LIKE' },
   json: (sql, path, type) => `${sql} ${type === 'JSON' ? '->' : '->>'} ${jsonPath(path)}`,
   codecs: {
     BIGINT:    { encode: (value: bigint) => value, decode: (value: number | bigint) => BigInt(value) },

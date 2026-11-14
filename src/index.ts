@@ -217,7 +217,14 @@ declare const COLUMNS: unique symbol;
 declare const OPERAND: unique symbol;
 declare const KEY: unique symbol;
 
-type Op = '=' | '!=' | '<' | '<=' | '>' | '>=' | 'is' | 'is not';
+type Op =
+  | '=' | '!=' | '<' | '<=' | '>' | '>='
+  | 'is' | 'is not'
+  | 'is distinct from' | 'is not distinct from'
+  | 'like' | 'not like'
+  | 'ilike' | 'not ilike'
+  | 'in' | 'not in'
+  | 'between' | 'not between';
 
 // what an operand renders to: a column (or a field nested in one), a fragment
 // of raw SQL, or an expression built from other nodes
@@ -372,6 +379,9 @@ type DialectName = 'postgres' | 'sqlite' | (string & {});
  * value, or `undefined` when the database can't natively, in which case the
  * value is generated client-side on insert.
  *
+ * `operators` overrides how an operator is written, when the database
+ * doesn't take its standard spelling.
+ *
  * `json` extracts a field nested in a JSON column, as an SQL value of the
  * field's type: a JSON document itself when the field is a JSON one (a
  * record, or embedded fields).
@@ -382,6 +392,8 @@ interface Dialect {
   type(column: Column): string;
   generated(column: Column): string | undefined;
   json(sql: string, path: string[], type: Primitive): string;
+  // operators the database spells differently, e.g. ILIKE
+  operators: Partial<Record<Op, string>>;
   codecs: Record<Primitive, Codec>;
 }
 
@@ -501,10 +513,30 @@ const renderNode = (b: SqlBuilder, node: Node): SqlBuilder => {
 
     case 'compare': {
       const { lhs, op, rhs } = node;
-      renderNode(b, lhs).push(' ', op.toUpperCase(), ' ');
-      if (op === 'is' || op === 'is not') return b.push(String((rhs as { value: unknown }).value).toUpperCase());
-      if (rhs.kind === 'value') return b.param(encodeFor(b.dialect, lhs, rhs.value));
-      return renderNode(b, rhs);
+      const operator = b.dialect.operators[op] ?? op.toUpperCase();
+      if (rhs.kind !== 'value') return renderNode(renderNode(b, lhs).push(' ', operator, ' '), rhs);
+
+      const param = (value: unknown) => b.param(encodeFor(b.dialect, lhs, value));
+      const values = rhs.value as unknown[];
+
+      switch (op) {
+        case 'is':
+        case 'is not':
+          return renderNode(b, lhs).push(' ', operator, ' ', String(rhs.value).toUpperCase());
+        // `IN ()` isn't valid SQL, but an empty list still has an answer
+        case 'in':
+        case 'not in':
+          if (values.length === 0) return b.push(op === 'in' ? '1 = 0' : '1 = 1');
+          return renderNode(b, lhs).push(' ', operator, ' (').join(values, ', ', param).push(')');
+        case 'between':
+        case 'not between':
+          renderNode(b, lhs).push(' ', operator, ' ');
+          param(values[0]).push(' AND ');
+          return param(values[1]);
+        default:
+          renderNode(b, lhs).push(' ', operator, ' ');
+          return param(rhs.value);
+      }
     }
 
     case 'group': {
@@ -558,28 +590,68 @@ type NullsOf<O> = O extends { readonly [OPERAND]: { nulls: infer N extends strin
 // the value an operand reads in a query where the `N` aliases may be missing
 type ValueIn<O, N extends string> = [NullsOf<O> & N] extends [never] ? ValueOf<O> : ValueOf<O> | null;
 
-type ComparisonOp = '=' | '!=' | '<' | '<=' | '>' | '>=';
+// operators that also take another operand
+type ColumnOp = '=' | '!=' | '<' | '<=' | '>' | '>=' | 'is distinct from' | 'is not distinct from';
+type MatchOp = 'like' | 'not like' | 'ilike' | 'not ilike';
 
 // `is` and `is not` take null (when the value can be null) and booleans
 // (when it's a boolean)
 type ValueFor<V, O extends Op> = O extends 'is' | 'is not'
   ? (null extends V ? null : never) | (boolean extends NonNullable<V> ? boolean : never)
+  : O extends MatchOp
+  ? [NonNullable<V>] extends [string] ? string : unknown extends V ? string : never
+  : O extends 'in' | 'not in'
+  ? readonly NonNullable<V>[]
+  : O extends 'between' | 'not between'
+  ? readonly [low: NonNullable<V>, high: NonNullable<V>]
+  : O extends 'is distinct from' | 'is not distinct from'
+  ? NonNullable<V> | null
   : NonNullable<V>;
 
 // comparisons also take another operand, as long as its values are compatible
 type RhsFor<V, O extends Op, A extends string = string> =
   | ValueFor<V, O>
-  | (O extends ComparisonOp ? Operand<A, NonNullable<V> | null> : never);
+  | (O extends ColumnOp ? Operand<A, NonNullable<V> | null> : never);
 
 type Condition<A extends string = string> = Operand<A, boolean, never>;
 
+// LIKE only matches text the same way across databases
+const TEXTUAL: readonly Primitive[] = ['CITEXT', 'STRING', 'TEXT'];
+const COLUMN_OPS: readonly Op[] = ['=', '!=', '<', '<=', '>', '>=', 'is distinct from', 'is not distinct from'];
+
 const compare = (lhs: Operand, op: Op, rhs: unknown): Node => {
-  const tests = op === 'is' || op === 'is not';
-  if (tests && rhs !== null && rhs !== true && rhs !== false) throw new Error(`"${op}" takes null, true or false, got ${String(rhs)}`);
+  const node = lhs[NODE];
+  const fail = (message: string) => raise(`"${op}" ${message}, got ${Array.isArray(rhs) ? `[${rhs.join(', ')}]` : String(rhs)}`);
+
+  if (isOperand(rhs) && !COLUMN_OPS.includes(op)) fail('takes a value, not another operand');
+
+  switch (op) {
+    case 'is':
+    case 'is not':
+      if (rhs !== null && rhs !== true && rhs !== false) fail('takes null, true or false');
+      break;
+    case 'in':
+    case 'not in':
+      if (!Array.isArray(rhs)) fail('takes a list of values');
+      break;
+    case 'between':
+    case 'not between':
+      if (!Array.isArray(rhs) || rhs.length !== 2) fail('takes a [low, high] pair');
+      break;
+    case 'like':
+    case 'not like':
+    case 'ilike':
+    case 'not ilike':
+      if (typeof rhs !== 'string') fail('takes a string pattern');
+      if (node.kind === 'ref' && !TEXTUAL.includes((node.path.at(-1) ?? node.col).type)) {
+        raise(`"${op}" only takes text columns, "${[node.alias, node.col.key, ...node.path.map(field => field.key)].join('.')}" isn't one`);
+      }
+      break;
+  }
 
   return {
     kind: 'compare',
-    lhs: lhs[NODE],
+    lhs: node,
     op,
     rhs: isOperand(rhs) ? rhs[NODE] : { kind: 'value', value: rhs },
   };
@@ -589,7 +661,7 @@ const compare = (lhs: Operand, op: Op, rhs: unknown): Node => {
 // constraint, losing the operand's aliases
 type ExprOf = {
   <L extends Operand, O extends Op>(lhs: L, op: O, rhs: ValueFor<ValueOf<L>, O>): Condition<AliasesOf<L>>;
-  <L extends Operand, O extends ComparisonOp, R extends Operand<string, NonNullable<ValueOf<L>> | null>>(lhs: L, op: O, rhs: R): Condition<AliasesOf<L> | AliasesOf<R>>;
+  <L extends Operand, O extends ColumnOp, R extends Operand<string, NonNullable<ValueOf<L>> | null>>(lhs: L, op: O, rhs: R): Condition<AliasesOf<L> | AliasesOf<R>>;
 };
 
 const exprOf: ExprOf = (lhs: Operand, op: Op, rhs: unknown) => operand(compare(lhs, op, rhs)) as never;
