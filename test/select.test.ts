@@ -1,0 +1,192 @@
+import { beforeEach, describe, expect, test } from 'bun:test';
+import { from, into } from '../src';
+import { type Status, type Task, minutesAgo, minutesFromNow, task, tasks, users } from './fixtures';
+import { type Database, type Equals, type Expand, assert, fresh } from './helpers';
+
+describe('select', () => {
+  let db: Database;
+  let sqls: string[];
+  let rows: Task[];
+
+  beforeEach(async () => {
+    ({ db, sqls } = await fresh());
+
+    rows = await into(tasks).values([
+      task({ status: 'scheduled', scheduledTo: minutesAgo(3) }),
+      task({ status: 'queued', scheduledTo: minutesAgo(1) }),
+      task({ status: 'running', scheduledTo: minutesAgo(2) }),
+      task({ status: 'scheduled', scheduledTo: minutesFromNow(1) }),
+    ]).insert(db);
+
+    sqls.length = 0;
+  });
+
+  const due = () => from(tasks).where(tasks.scheduledTo, '<', new Date());
+  const statuses = (rows: { status: Status }[]) => rows.map(row => row.status);
+
+  describe('all', () => {
+    test('returns every row', async () => {
+      expect(await from(tasks).orderBy([tasks.scheduledTo]).all(db)).toEqual([rows[0]!, rows[2]!, rows[1]!, rows[3]!]);
+    });
+
+    test('returns the matching rows', async () => {
+      expect(statuses(await due().orderBy([tasks.scheduledTo]).all(db))).toEqual(['scheduled', 'running', 'queued']);
+    });
+
+    test('returns an empty list when nothing matches', async () => {
+      expect(await from(tasks).where(tasks.status, '=', 'failed').all(db)).toEqual([]);
+    });
+  });
+
+  describe('one', () => {
+    test('returns the first matching row', async () => {
+      expect(await due().orderBy([tasks.scheduledTo]).one(db)).toEqual(rows[0]!);
+    });
+
+    test('limits the query to 1 row', async () => {
+      await due().one(db);
+
+      expect(sqls.at(-1)).toMatch(/ LIMIT 1$/);
+    });
+
+    test('returns null when nothing matches', async () => {
+      expect(await from(tasks).where(tasks.status, '=', 'failed').one(db)).toBeNull();
+    });
+  });
+
+  describe('select', () => {
+    test('picks columns under keys of their own', async () => {
+      const picked = await due().orderBy([tasks.scheduledTo]).select({ id: tasks.id, type: tasks.status }).all(db);
+
+      expect(picked).toEqual([
+        { id: rows[0]!.id, type: 'scheduled' },
+        { id: rows[2]!.id, type: 'running' },
+        { id: rows[1]!.id, type: 'queued' },
+      ]);
+    });
+
+    test('picks every column of a spread table', async () => {
+      expect(await from(tasks).select({ ...tasks }).orderBy([tasks.scheduledTo]).all(db)).toEqual(await from(tasks).orderBy([tasks.scheduledTo]).all(db));
+    });
+
+    test('picks a column under many keys', async () => {
+      const [row] = await from(tasks).select({ a: tasks.status, b: tasks.status }).orderBy([tasks.scheduledTo]).all(db);
+
+      expect(row).toEqual({ a: 'scheduled', b: 'scheduled' });
+    });
+
+    test('picks nested fields', async () => {
+      const [row] = await from(tasks).select({ kind: tasks.payload.kind }).all(db);
+
+      expect(row).toEqual({ kind: 'Prune' });
+    });
+
+    test('picks nothing given an empty projection', async () => {
+      expect(await due().select({}).all(db)).toEqual([{}, {}, {}]);
+    });
+
+    test('works with one', async () => {
+      expect(await due().orderBy([tasks.scheduledTo]).select({ status: tasks.status }).one(db)).toEqual({ status: 'scheduled' });
+    });
+  });
+
+  describe('orderBy', () => {
+    test('orders by many columns', async () => {
+      const ordered = await from(tasks).orderBy([tasks.status, tasks.scheduledTo]).all(db);
+
+      expect(ordered.map(row => row.id)).toEqual([rows[1]!.id, rows[2]!.id, rows[0]!.id, rows[3]!.id]);
+    });
+
+    test('orders descending', async () => {
+      const ordered = await from(tasks).orderBy([[tasks.scheduledTo, 'DESC']]).all(db);
+
+      expect(ordered).toEqual([rows[3]!, rows[1]!, rows[2]!, rows[0]!]);
+    });
+  });
+
+  describe('limit and offset', () => {
+    test('limit caps the number of rows', async () => {
+      expect(await due().orderBy([tasks.scheduledTo]).limit(1).offset(0).all(db)).toEqual([rows[0]!]);
+      expect(await due().limit(2).all(db)).toHaveLength(2);
+    });
+
+    test('offset skips rows', async () => {
+      expect(await due().orderBy([tasks.scheduledTo]).limit(1).offset(1).all(db)).toEqual([rows[2]!]);
+      expect(await due().orderBy([tasks.scheduledTo]).offset(2).all(db)).toEqual([rows[1]!]);
+    });
+  });
+
+  describe('exists', () => {
+    test('is true when any row matches', async () => {
+      expect(await from(tasks).where(tasks.status, '=', 'queued').exists(db)).toBe(true);
+    });
+
+    test('is false when no row matches', async () => {
+      expect(await from(tasks).where(tasks.status, '=', 'failed').exists(db)).toBe(false);
+    });
+  });
+
+  describe('count', () => {
+    test('counts the matching rows', async () => {
+      expect(await due().count(db)).toBe(3);
+      expect(await from(tasks).count(db)).toBe(4);
+      expect(await from(tasks).where(tasks.status, '=', 'failed').count(db)).toBe(0);
+    });
+  });
+
+  test('builders are immutable', async () => {
+    const base = from(tasks);
+
+    base.where(tasks.status, '=', 'failed');
+    base.limit(1);
+
+    expect(await base.count(db)).toBe(4);
+    expect(await base.all(db)).toHaveLength(4);
+  });
+});
+
+// ─── type-level ──────────────────────────────────────────────────────────────
+
+export const typeChecks = async (db: Database) => {
+  const c1 = await from(tasks).where(tasks.scheduledTo, '<', new Date()).one(db);
+  assert<Equals<typeof c1, Task | null>>();
+
+  const c2 = await from(tasks).where(tasks.scheduledTo, '<', new Date()).orderBy([tasks.scheduledTo]).all(db);
+  assert<Equals<typeof c2, Task[]>>();
+
+  const c3 = await from(tasks).select({ id: tasks.id, type: tasks.status }).all(db);
+  assert<Equals<typeof c3, { id: string; type: Status }[]>>();
+
+  const c4 = await from(tasks).select({ ...tasks }).all(db);
+  assert<Equals<typeof c4, Task[]>>();
+
+  const c5 = await from(tasks).select({}).all(db);
+  assert<Equals<typeof c5, {}[]>>();
+
+  const c6 = await from(tasks).limit(1).offset(0).all(db);
+  assert<Equals<typeof c6, Task[]>>();
+
+  const nested = await from(tasks).select({ kind: tasks.payload.kind, params: tasks.payload.params }).all(db);
+  assert<Equals<typeof nested, { kind: string; params: Record<string, unknown> }[]>>();
+
+  const spreadOne = await from(tasks).select({ ...tasks, parent: tasks.parentId }).one(db);
+  assert<Equals<Expand<NonNullable<typeof spreadOne>>, Expand<Task & { parent: string | null }>>>();
+
+  const exists = await from(tasks).exists(db);
+  assert<Equals<typeof exists, boolean>>();
+
+  const count = await from(tasks).count(db);
+  assert<Equals<typeof count, number>>();
+
+  // @ts-expect-error projections take references to the query's table only
+  from(tasks).select({ id: users.id });
+
+  // @ts-expect-error projections take references, not keys
+  from(tasks).select({ id: 'id' });
+
+  // @ts-expect-error orderBy takes references to the query's table only
+  from(tasks).orderBy([users.createdAt]);
+
+  // @ts-expect-error orderBy directions are ASC or DESC
+  from(tasks).orderBy([[tasks.createdAt, 'UP']]);
+};

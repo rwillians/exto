@@ -7,6 +7,7 @@
       "devDependencies": {
         "@types/bun": "latest",
         "typescript": "^7.1.0-dev.20261114.1",
+        "zod": "^4.6.7",
       },
       "peerDependencies": {
         "typescript": "^7.1.0-0",
@@ -37,5 +38,7 @@
     "typescript": ["typescript@7.1.0-dev.20261114.1", "", { "optionalDependencies": { "@typescript/typescript-darwin-arm64": "7.1.0-dev.20261114.1", "@typescript/typescript-darwin-x64": "7.1.0-dev.20261114.1", "@typescript/typescript-linux-arm": "7.1.0-dev.20261114.1", "@typescript/typescript-linux-arm64": "7.1.0-dev.20261114.1", "@typescript/typescript-linux-x64": "7.1.0-dev.20261114.1", "@typescript/typescript-win32-arm64": "7.1.0-dev.20261114.1", "@typescript/typescript-win32-x64": "7.1.0-dev.20261114.1" }, "bin": { "tsc": "bin/tsc" } }, "sha512-XMiO2wrYdIGBTc89tkWi2CMGU/NFiX/ADGc4m9HbYSoxkVJ86G7R5ISC1mifnKoT/FA9rJQkIx3KaTD6Nz9yQg=="],
 
     "undici-types": ["undici-types@8.9.0", "", {}, "sha512-KTDyRTYX8sWmKXAikPHHSyc63CRPETMctyjKFupcC6OBLXT3xsN0e9aF7m+mIXutFWpUXuedtowG7iLOzp0kQg=="],
+
+    "zod": ["zod@4.6.7", "", {}, "sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg=="],
   }
 }
