@@ -1,0 +1,12 @@
+{
+  "folders": [
+    { "path": ".", "name": "exto" },
+  ],
+  "settings": {
+    "js/ts.experimental.useTsgo": true,
+    "js/ts.tsdk.path": "./node_modules/typescript",
+  },
+  "extensions": {
+    "recommendations": ["TypeScriptTeam.native-preview"],
+  },
+}

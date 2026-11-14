@@ -3,20 +3,18 @@
   "version": "0.1.2",
   "license": "MIT",
   "type": "module",
+  "typescript": {
+    "contentMapper": {
+      "exec": ["node", "src/mapper.ts"],
+      "compilerOptions": []
+    }
+  },
   "scripts": {
     "typecheck": "tsc --noEmit --runExternalCode"
   },
-  "typescript": {
-    "contentMapper": {
-      "exec": [
-        "bun",
-        "src/mapper.ts"
-      ]
-    }
-  },
   "devDependencies": {
-    "@types/bun": "latest",
-    "typescript": "^7.1.0-dev.20261114.1",
-    "@rwillians/exto": "link:."
+    "@rwillians/exto": "file:.",
+    "@types/node": "^25.0.0",
+    "typescript": "^7.1.0-dev.20261114.1"
   }
 }

@@ -12,12 +12,14 @@ const handlers: Record<string, Handler> = {
   // parameter for each `:name` in it; the row is hard-coded for now
   transform: ({ content }: { content: string }) => {
     const names = [...new Set(content.match(/(?<!:):[a-z_][a-z0-9_]{0,}/gi) ?? [])].map(name => name.slice(1));
+    // the shapes are written out in `run` itself, not behind aliases, so the
+    // editor shows them as they are
+    const params = `{ ${names.map(name => `${name}: unknown;`).join(' ')} }`;
+    const row = `{ id: number; name: string }`;
     const text = [
-      `export type Params = { ${names.map(name => `${name}: unknown;`).join(' ')} };`,
-      `export type Row = { id: number; name: string };`,
       `declare const query: {`,
       `  readonly sql: ${JSON.stringify(content)};`,
-      `  run(db: unknown, params: Params): Promise<Row | null>;`,
+      `  run(db: unknown, params: ${params}): Promise<${row} | null>;`,
       `};`,
       `export default query;`,
       ``,

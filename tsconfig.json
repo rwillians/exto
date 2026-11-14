@@ -1,15 +1,19 @@
 {
   "compilerOptions": {
     "target": "esnext",
-    "module": "preserve",
-    "moduleResolution": "bundler",
+    "module": "nodenext",
     "lib": ["esnext"],
-    "types": ["bun"],
+    "types": ["node"],
     "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "verbatimModuleSyntax": true,
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
     "noEmit": true,
     "skipLibCheck": true
   },
   "contentMappers": [
     { "package": "@rwillians/exto", "extensions": [".sql"] }
-  ]
+  ],
 }
