@@ -216,6 +216,7 @@ const NODE = Symbol('exto.node');
 declare const COLUMNS: unique symbol;
 declare const OPERAND: unique symbol;
 declare const KEY: unique symbol;
+declare const FRAGMENT: unique symbol;
 
 type Op =
   | '=' | '!=' | '<' | '<=' | '>' | '>='
@@ -615,6 +616,12 @@ type RhsFor<V, O extends Op, A extends string = string> =
 
 type Condition<A extends string = string> = Operand<A, boolean, never>;
 
+// type only: a fragment's SQL could be anything, so it goes wherever a
+// value or a condition does
+type Fragment<A extends string = string> = Operand<A, unknown, never> & { readonly [FRAGMENT]: true };
+
+type Predicate<A extends string = string> = Condition<A> | Fragment<A>;
+
 // LIKE only matches text the same way across databases
 const TEXTUAL: readonly Primitive[] = ['CITEXT', 'STRING', 'TEXT'];
 const COLUMN_OPS: readonly Op[] = ['=', '!=', '<', '<=', '>', '>=', 'is distinct from', 'is not distinct from'];
@@ -666,7 +673,7 @@ type ExprOf = {
 
 const exprOf: ExprOf = (lhs: Operand, op: Op, rhs: unknown) => operand(compare(lhs, op, rhs)) as never;
 
-const group = (op: 'AND' | 'OR') => <E extends Condition>(exprs: E[]) =>
+const group = (op: 'AND' | 'OR') => <E extends Predicate>(exprs: E[]) =>
   operand({ kind: 'group', op, nodes: exprs.map(expr => expr[NODE]) }) as unknown as Condition<AliasesOf<E>>;
 
 const call = (fn: 'COUNT' | 'SUM') => <O extends Operand>(arg: O) =>
@@ -681,9 +688,10 @@ const expr = Object.assign(exprOf, {
 });
 
 // a fragment of raw SQL: interpolated operands are rendered in place, and
-// any other value is passed as a parameter
+// any other value is passed as a parameter. It reads as a value, or as a
+// condition of its own
 const f = <V extends unknown[]>(strings: TemplateStringsArray, ...values: V) =>
-  operand({ kind: 'fragment', strings: [...strings], values }) as unknown as Operand<AliasesOf<V[number]>, unknown, never>;
+  operand({ kind: 'fragment', strings: [...strings], values }) as unknown as Fragment<AliasesOf<V[number]>>;
 
 // every table an operand reads from must be part of the query, under the
 // alias it's referenced by
@@ -909,14 +917,14 @@ class QueryBuilder<T extends Table, A extends string = AliasOf<T>, N extends str
   }
 
   where<L extends Operand<A>, O extends Op>(lhs: L, op: O, rhs: RhsFor<ValueIn<L, N>, O, A>): QueryBuilder<T, A, N, R>;
-  where(condition: Condition<A>): QueryBuilder<T, A, N, R>;
+  where(condition: Predicate<A>): QueryBuilder<T, A, N, R>;
   where(...args: [Operand, Op, unknown] | [Operand]) {
     const node = args.length === 1 ? args[0][NODE] : compare(...args);
     return new QueryBuilder<T, A, N, R>({ ...this.query, where: [...this.query.where, assertInScope(this.query.scope, node)] });
   }
 
   // the joined table's columns read as null for rows it has no match for
-  leftJoin<J extends Table>(table: J, on: Condition<A | AliasOf<J>>) {
+  leftJoin<J extends Table>(table: J, on: Predicate<A | AliasOf<J>>) {
     const alias = table[ALIAS];
     if (this.query.scope.has(alias)) throw new Error(`"${alias}" is already part of the query, join it under another alias`);
 

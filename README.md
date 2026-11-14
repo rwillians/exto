@@ -300,6 +300,20 @@ import { f } from '@rwillians/exto';
 await from(tasks).where(f`upper(${tasks.payload.kind})`, '=', 'PRUNE').all(db);
 ```
 
+A fragment can also be a condition of its own, to use any operator your
+database has, e.g. postgres' JSON containment and regular expressions:
+
+```ts
+await from(tasks).where(f`${tasks.payload} @> ${{ kind: 'Prune' }}`).all(db);
+
+await from(tasks)
+  .where(expr.or([
+    f`${tasks.payload.kind} ~ ${'^N'}`,
+    expr(tasks.status, '=', 'queued'),
+  ]))
+  .all(db);
+```
+
 Interpolated columns are rendered in place, and any other value is passed as
 a parameter.
 
