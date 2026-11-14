@@ -19,7 +19,7 @@ const tasks = table('tasks', t => ({
   parentId: t.uuid().nullable(),
   status: t.enum(['scheduled', 'queued', 'running', 'succeeded', 'failed', 'canceled']),
   type: t.string({ size: 48 }),
-  payload: t.json(z.record(z.string(), z.any())),
+  payload: t.json(z.record(z.string(), z.any())).default({}),
   attempts: t.integer().default(0),
   createdAt: t.datetime().default(() => new Date()),
   scheduledAt: t.datetime(),
@@ -58,31 +58,31 @@ await migrate(db);
 // ─── inserts ─────────────────────────────────────────────────────────────────
 
 const a1: Task[] = await into(tasks)
-  .values({ status: 'scheduled', type: 'Prune', payload: {}, scheduledAt: new Date() })
+  .values({ status: 'scheduled', type: 'Prune', scheduledAt: new Date() })
   .values([
-    { status: 'scheduled', type: 'Prune', payload: {}, scheduledAt: new Date() },
-    { status: 'scheduled', type: 'Prune', payload: {}, scheduledAt: new Date() },
+    { status: 'scheduled', type: 'Prune', scheduledAt: new Date() },
+    { status: 'scheduled', type: 'Prune', scheduledAt: new Date() },
   ])
   .insert(db);
 
 const a2: Task[] = await into(tasks)
-  .values({ status: 'scheduled', type: 'Prune', payload: {}, scheduledAt: new Date() })
+  .values({ status: 'scheduled', type: 'Prune', scheduledAt: new Date() })
   .values([
-    { status: 'scheduled', type: 'Prune', payload: {}, scheduledAt: new Date() },
-    { status: 'scheduled', type: 'Prune', payload: {}, scheduledAt: new Date() },
+    { status: 'scheduled', type: 'Prune', scheduledAt: new Date() },
+    { status: 'scheduled', type: 'Prune', scheduledAt: new Date() },
   ])
   .insert(db, { returning: true });
 
 const a3: Pick<Task, 'id'>[] = await into(tasks)
-  .values({ status: 'scheduled', type: 'Prune', payload: {}, scheduledAt: new Date() })
+  .values({ status: 'scheduled', type: 'Prune', scheduledAt: new Date() })
   .insert(db, { returning: ['id'] });
 
 const a4: {}[] = await into(tasks)
-  .values({ status: 'scheduled', type: 'Prune', payload: {}, scheduledAt: new Date() })
+  .values({ status: 'scheduled', type: 'Prune', scheduledAt: new Date() })
   .insert(db, { returning: [] });
 
 const a5: undefined = await into(tasks)
-  .values({ status: 'scheduled', type: 'Prune', payload: {}, scheduledAt: new Date() })
+  .values({ status: 'scheduled', type: 'Prune', scheduledAt: new Date() })
   .insert(db, { returning: false });
 
 // ─── on conflict ─────────────────────────────────────────────────────────────
