@@ -1,14 +1,21 @@
 import { SQL, type TransactionSQL } from 'bun';
-import type { Codec, Dialect, IDatabase, ILogger, Primitive, Row } from './index';
+import type { Codec, Column, Dialect, IDatabase, ILogger, Primitive, Row } from './index';
 
-const TYPES: Record<Primitive, string> = {
-  BOOLEAN:   'BOOLEAN',
-  FLOAT:     'DOUBLE PRECISION',
-  INTEGER:   'BIGINT',
-  JSON:      'JSONB',
-  STRING:    'TEXT',
-  TIMESTAMP: 'TIMESTAMPTZ',
-  UUID:      'UUID',
+const TYPES: Record<Primitive, (col: Column) => string> = {
+  BIGINT:    () => 'BIGINT',
+  BINARY:    () => 'BYTEA',
+  BOOLEAN:   () => 'BOOLEAN',
+  CITEXT:    () => 'CITEXT',
+  DATE:      () => 'DATE',
+  DECIMAL:   ({ precision, scale }) => precision !== undefined && scale !== undefined ? `NUMERIC(${precision}, ${scale})` : 'NUMERIC',
+  FLOAT:     () => 'DOUBLE PRECISION',
+  INTEGER:   () => 'BIGINT',
+  JSON:      () => 'JSONB',
+  SEQUENCE:  () => 'BIGINT',
+  STRING:    ({ length = 255 }) => `VARCHAR(${length})`,
+  TEXT:      () => 'TEXT',
+  TIMESTAMP: () => 'TIMESTAMPTZ',
+  UUID:      () => 'UUID',
 };
 
 const identity = <T>() => ({
@@ -16,7 +23,8 @@ const identity = <T>() => ({
   decode: (value: T) => value,
 });
 
-// Bun.SQL reads bigints (BIGINT columns, COUNT and SUM) as strings
+// Bun.SQL reads bigints (BIGINT columns, COUNT and SUM) and NUMERICs as
+// strings
 const numeric: Codec = {
   encode: (value: number) => value,
   decode: (value: string | number) => Number(value),
@@ -24,9 +32,12 @@ const numeric: Codec = {
 
 // `#>>` reads text, so fields of other types are cast back to theirs
 const CASTS: Partial<Record<Primitive, string>> = {
-  BOOLEAN: 'BOOLEAN',
-  FLOAT:   'DOUBLE PRECISION',
-  INTEGER: 'DOUBLE PRECISION',
+  BIGINT:   'BIGINT',
+  BOOLEAN:  'BOOLEAN',
+  DECIMAL:  'NUMERIC',
+  FLOAT:    'DOUBLE PRECISION',
+  INTEGER:  'DOUBLE PRECISION',
+  SEQUENCE: 'BIGINT',
 };
 
 const jsonPath = (path: string[]) => `'{${path.map(key => `"${key.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('\'', '\'\'')}"`).join(',')}}'`;
@@ -42,14 +53,24 @@ const json = (sql: string, path: string[], type: Primitive) => {
 const dialect: Dialect = {
   name: 'postgres',
   placeholder: (index) => `$${index}`,
-  type: (col) => TYPES[col.type],
+  type: (col) => TYPES[col.type](col),
+  generated: (col) => col.type === 'SEQUENCE'
+    ? 'GENERATED ALWAYS AS IDENTITY'
+    : undefined,
   json,
   codecs: {
+    BIGINT:    { encode: (value: bigint) => value, decode: (value: string | bigint) => BigInt(value) },
+    BINARY:    { encode: (value: Uint8Array) => value, decode: (value: Uint8Array) => new Uint8Array(value) },
     BOOLEAN:   identity<boolean>(),
+    CITEXT:    identity<string>(),
+    DATE:      { encode: (value: string) => value, decode: (value: Date | string) => value instanceof Date ? value.toISOString().slice(0, 10) : value },
+    DECIMAL:   numeric,
     FLOAT:     numeric,
     INTEGER:   numeric,
     JSON:      identity<unknown>(),
+    SEQUENCE:  numeric,
     STRING:    identity<string>(),
+    TEXT:      identity<string>(),
     TIMESTAMP: { encode: (value: Date) => value, decode: (value: Date | string) => new Date(value) },
     UUID:      identity<string>(),
   },

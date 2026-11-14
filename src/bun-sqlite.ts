@@ -2,11 +2,18 @@ import { Database, type SQLQueryBindings } from 'bun:sqlite';
 import type { Codec, Dialect, IDatabase, ILogger, Primitive, Row } from './index';
 
 const TYPES: Record<Primitive, string> = {
+  BIGINT:    'INTEGER',
+  BINARY:    'BLOB',
   BOOLEAN:   'INTEGER',
+  CITEXT:    'TEXT COLLATE NOCASE',
+  DATE:      'TEXT',
+  DECIMAL:   'NUMERIC',
   FLOAT:     'REAL',
   INTEGER:   'INTEGER',
   JSON:      'TEXT',
+  SEQUENCE:  'INTEGER',
   STRING:    'TEXT',
+  TEXT:      'TEXT',
   TIMESTAMP: 'INTEGER',
   UUID:      'TEXT',
 };
@@ -16,8 +23,8 @@ const identity = <T>() => ({
   decode: (value: T) => value,
 });
 
-// integers are read as bigints (see `execute`), so they go back to being
-// numbers
+// integers are read as bigints (see `execute`), so those that aren't BIGINT
+// columns go back to being numbers
 const numeric: Codec = {
   encode: (value: number) => value,
   decode: (value: number | bigint) => Number(value),
@@ -30,13 +37,25 @@ const dialect: Dialect = {
   name: 'sqlite',
   placeholder: () => '?',
   type: (col) => TYPES[col.type],
+  generated: (col) => {
+    if (col.type === 'SEQUENCE' && col.primaryKey) return 'AUTOINCREMENT';
+    if (col.type === 'SEQUENCE') throw new Error(`SQLite can only generate sequences for primary keys, column "${col.name}" isn't one`);
+    return undefined;
+  },
   json: (sql, path, type) => `${sql} ${type === 'JSON' ? '->' : '->>'} ${jsonPath(path)}`,
   codecs: {
+    BIGINT:    { encode: (value: bigint) => value, decode: (value: number | bigint) => BigInt(value) },
+    BINARY:    { encode: (value: Uint8Array) => value, decode: (value: Uint8Array) => new Uint8Array(value) },
     BOOLEAN:   { encode: (value: boolean) => (value ? 1 : 0), decode: (value: number | bigint) => Number(value) === 1 },
+    CITEXT:    identity<string>(),
+    DATE:      identity<string>(),
+    DECIMAL:   numeric,
     FLOAT:     numeric,
     INTEGER:   numeric,
     JSON:      { encode: (value) => JSON.stringify(value), decode: (value: string) => JSON.parse(value) },
+    SEQUENCE:  numeric,
     STRING:    identity<string>(),
+    TEXT:      identity<string>(),
     TIMESTAMP: { encode: (value: Date) => value.getTime(), decode: (value: number | bigint) => new Date(Number(value)) },
     UUID:      identity<string>(),
   },

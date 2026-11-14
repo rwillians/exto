@@ -61,7 +61,8 @@ const adapters: Adapter[] = [
     // one connection pool per suite, emptied before every test
     fresh: async (previous, logger) => {
       const db = previous ?? pg.connect(PG_URL!, { loggers: [logger] });
-      await exec(db, 'DROP TABLE IF EXISTS "tasks", "users", "schema_migrations"');
+      await exec(db, 'DROP TABLE IF EXISTS "tasks", "users", "things", "schema_migrations"');
+      await exec(db, 'CREATE EXTENSION IF NOT EXISTS citext');
       return db;
     },
     columnsOf: async (db, table) => {

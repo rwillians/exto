@@ -5,19 +5,32 @@ import { type Expand, raise, snakeCase } from './utils';
 // ─── columns ─────────────────────────────────────────────────────────────────
 
 type Primitive =
-  'BOOLEAN'
+  'BIGINT'
+  | 'BINARY'
+  | 'BOOLEAN'
+  | 'CITEXT'
+  | 'DATE'
+  | 'DECIMAL'
   | 'FLOAT'
   | 'INTEGER'
   | 'JSON'
+  | 'SEQUENCE'
   | 'STRING'
+  | 'TEXT'
   | 'TIMESTAMP'
   | 'UUID';
+
+const NUMERIC: readonly Primitive[] = ['BIGINT', 'DECIMAL', 'FLOAT', 'INTEGER', 'SEQUENCE'];
+type NumericType = 'BIGINT' | 'DECIMAL' | 'FLOAT' | 'INTEGER' | 'SEQUENCE';
 
 type ColumnProps<S extends std.Schema = std.Schema> = {
   type: Primitive;
   schema: S;
   default?: unknown;
   generated?: true;
+  length?: number;
+  precision?: number;
+  scale?: number;
   nullable?: true;
   primaryKey?: true;
   unique?: true;
@@ -42,7 +55,7 @@ class ColumnBuilder<P extends ColumnProps> {
   }
 
   generated() {
-    if (this.props.type !== 'UUID') throw new Error('Only UUID columns can be generated');
+    if (this.props.type !== 'UUID') throw new Error('Only UUID columns can be generated, use t.sequence() for integers');
     return new ColumnBuilder({ ...this.props, generated: true } as Expand<P & { generated: true }>);
   }
 
@@ -109,12 +122,30 @@ const embedded = {
 const defineType = <S extends std.Schema>({ primitive, schema }: { primitive: Exclude<Primitive, 'JSON'>, schema: S }) => column({ type: primitive, schema });
 
 const types = {
+  bigint: () => column({ type: 'BIGINT', schema: std.bigint() }),
+  binary: () => column({ type: 'BINARY', schema: std.instanceOf(Uint8Array) }),
   boolean: () => column({ type: 'BOOLEAN', schema: std.boolean() }),
-  enum: <const T extends readonly [string, ...string[]]>(values: T) => column({ type: 'STRING', schema: std.enumOf(values) }),
+  // case-insensitive text; postgres needs `CREATE EXTENSION citext` for it
+  citext: () => column({ type: 'CITEXT', schema: std.string() }),
+  // a calendar date, as a `YYYY-MM-DD` string
+  date: () => column({ type: 'DATE', schema: std.isoDate() }),
+  // `precision` and `scale` only shape postgres' NUMERIC; values are still
+  // numbers, so they're as exact as a double
+  decimal: (options?: { precision: number, scale: number }) => column({ type: 'DECIMAL', schema: std.number(), ...options }),
+  enum: <const T extends readonly [string, ...string[]]>(values: T) => column({
+    type: 'STRING',
+    schema: std.enumOf(values),
+    length: Math.max(...values.map(value => value.length)),
+  }),
   float: () => column({ type: 'FLOAT', schema: std.number() }),
   integer: () => column({ type: 'INTEGER', schema: std.integer() }),
+  // any JSON document, validated by the given standard schema
+  json: <S extends std.Schema>(schema: S) => column({ type: 'JSON', schema }),
   record: () => column({ type: 'JSON', schema: std.record() }),
-  string: ({ max }: { max?: number } = {}) => column({ type: 'STRING', schema: std.string({ max }) }),
+  // an integer the database generates, counting up
+  sequence: () => column({ type: 'SEQUENCE', schema: std.integer(), generated: true }),
+  string: ({ size = 255 }: { size?: number } = {}) => column({ type: 'STRING', schema: std.string({ max: size }), length: size }),
+  text: () => column({ type: 'TEXT', schema: std.string() }),
   timestamp: () => column({ type: 'TIMESTAMP', schema: std.date() }),
   uuidv7: () => column({ type: 'UUID', schema: std.uuid() }),
 };
@@ -286,7 +317,7 @@ type Infer<M extends 'select' | 'insert' | 'update', T extends Table> = {
 }[M];
 
 type NumericKeys<C extends Columns> = {
-  [K in keyof C]: C[K] extends OmitOnUpdate ? never : C[K]['type'] extends 'INTEGER' | 'FLOAT' ? K : never;
+  [K in keyof C]: C[K] extends OmitOnUpdate ? never : C[K]['type'] extends NumericType ? K : never;
 }[keyof C];
 
 // type only: TypeScript leaves class methods out of a spread's type, so
@@ -334,6 +365,10 @@ type DialectName = 'postgres' | 'sqlite' | (string & {});
  * Everything that differs between database engines. SQL generation, param
  * collection, validation and encoding/decoding all live in the core.
  *
+ * `generated` returns the DDL that makes the database generate the column's
+ * value, or `undefined` when the database can't natively, in which case the
+ * value is generated client-side on insert.
+ *
  * `json` extracts a field nested in a JSON column, as an SQL value of the
  * field's type: a JSON document itself when the field is a JSON one (a
  * record, or embedded fields).
@@ -342,6 +377,7 @@ interface Dialect {
   name: DialectName;
   placeholder(index: number): string;
   type(column: Column): string;
+  generated(column: Column): string | undefined;
   json(sql: string, path: string[], type: Primitive): string;
   codecs: Record<Primitive, Codec>;
 }
@@ -362,12 +398,15 @@ interface IDatabase {
 
 // ─── encoding ────────────────────────────────────────────────────────────────
 
-// inside JSON documents, timestamps are ISO 8601 strings
+// inside JSON documents, timestamps are ISO 8601 strings, bigints are
+// strings of digits and binaries are base64 strings
 const toJson = (col: Column, value: unknown): unknown => {
   if (value === null || value === undefined) return null;
   if (col.fields && col.many) return (value as Row[]).map(item => toJson({ ...col, many: undefined }, item));
   if (col.fields) return Object.fromEntries(Object.values(col.fields).map(field => [field.key, toJson(field, (value as Row)[field.key])]));
   if (col.type === 'TIMESTAMP') return (value as Date).toISOString();
+  if (col.type === 'BIGINT') return String(value);
+  if (col.type === 'BINARY') return Buffer.from(value as Uint8Array).toString('base64');
 
   return value;
 };
@@ -378,7 +417,9 @@ const fromJson = (col: Column, value: unknown): unknown => {
   if (col.fields && col.many) return (value as Row[]).map(item => fromJson({ ...col, many: undefined }, item));
   if (col.fields) return Object.fromEntries(Object.values(col.fields).map(field => [field.key, fromJson(field, (value as Row)[field.key])]));
   if (col.type === 'TIMESTAMP') return new Date(value as string);
-  if (col.type === 'INTEGER' || col.type === 'FLOAT') return Number(value);
+  if (col.type === 'BIGINT') return BigInt(value as string);
+  if (col.type === 'BINARY') return new Uint8Array(Buffer.from(value as string, 'base64'));
+  if (NUMERIC.includes(col.type)) return Number(value);
   if (col.type === 'BOOLEAN') return value === true || value === 1 || value === 1n;
 
   return value;
@@ -655,7 +696,7 @@ const parseChanges = (table: Table, { set = {}, inc = {}, replace = [] }: { set?
 
   const incs = Object.entries(inc).filter(([, by]) => by !== undefined).map(([key, by]) => {
     const col = updatableColumn(key);
-    if (col.type !== 'INTEGER' && col.type !== 'FLOAT') throw new Error(`"${key}" isn't a numeric column of "${table[NAME]}"`);
+    if (!NUMERIC.includes(col.type)) throw new Error(`"${key}" isn't a numeric column of "${table[NAME]}"`);
     if (!Number.isFinite(by)) throw new ValidationError([{ path: [key], message: 'must be a finite number' }]);
     return { col, op: 'inc', value: by };
   });
@@ -692,6 +733,9 @@ const GENERATORS: Partial<Record<Primitive, () => unknown>> = {
 
 const generate = (col: Column) => (GENERATORS[col.type] ?? raise(`Cannot generate a value for column "${col.name}"`))();
 
+// columns the database generates are left out of inserts
+const isGeneratedByClient = (dialect: Dialect, col: Column) => col.generated === true && dialect.generated(col) === undefined;
+
 class InsertBuilder<T extends Table> {
   constructor(private readonly table: T,
               private readonly rows: InferForInsert<ColumnsOf<T>>[] = []) { }
@@ -707,7 +751,7 @@ class InsertBuilder<T extends Table> {
     if (this.rows.length === 0) return returning === false ? undefined : [];
 
     const { table } = this;
-    const cols = columnsOf(table);
+    const cols = columnsOf(table).filter(col => !col.generated || isGeneratedByClient(db.dialect, col));
     const insertable = Object.fromEntries(cols.filter(col => !col.generated).map(col => [col.key, col]));
     const rows = this.rows.map(row => validate(insertable, row));
 
@@ -939,6 +983,7 @@ const renderColumnDefinition = (dialect: Dialect, col: Column) => [
   quote(col.name),
   dialect.type(col),
   col.primaryKey && 'PRIMARY KEY',
+  col.generated && dialect.generated(col),
   !col.nullable && 'NOT NULL',
   col.unique && 'UNIQUE',
 ].filter(Boolean).join(' ');
