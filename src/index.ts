@@ -104,8 +104,36 @@ type Columns = Record<string, Column>;
 
 type Table<N extends string = string, C extends Columns = Columns> = {
   name: N;
-  alias: string;
   columns: C;
+};
+
+const TABLE = Symbol('exto.table');
+const ALIAS = Symbol('exto.alias');
+const REF = Symbol('exto.ref');
+
+type ColumnRef<A extends string = string, C extends Column = Column> = {
+  readonly [REF]: true;
+  readonly alias: A;
+  readonly col: C;
+};
+
+// an aliased table is shaped like its columns, each one a reference to that
+// column under the alias; the table and the alias are non-enumerable symbols,
+// so spreading it copies only the column references
+type Aliased<A extends string = string, T extends Table = Table> = {
+  [K in keyof T['columns']]: ColumnRef<A, T['columns'][K]>;
+} & {
+  readonly [TABLE]: T;
+  readonly [ALIAS]: A;
+};
+
+const isRef = (value: unknown): value is ColumnRef => typeof value === 'object' && value !== null && REF in value;
+
+const aliasTable = <A extends string, T extends Table>(table: T, alias: A) => {
+  const aliased = Object.fromEntries(Object.values(table.columns).map(col => [col.key, { [REF]: true, alias, col }]));
+  Object.defineProperty(aliased, TABLE, { value: table });
+  Object.defineProperty(aliased, ALIAS, { value: alias });
+  return aliased as Aliased<A, T>;
 };
 
 type OmitOnInsert = { generated: true };
@@ -132,7 +160,7 @@ type NumericKeys<C extends Columns> = {
 }[keyof C];
 
 type DefinedTable<N extends string, C extends Columns> = Table<N, C> & {
-  as: (alias: string) => DefinedTable<N, C>;
+  as: <A extends string>(alias: A) => Aliased<A, DefinedTable<N, C>>;
   infer: Infer<C>;                   // type only
   inferForInsert: InferForInsert<C>; // type only
   inferForUpdate: InferForUpdate<C>; // type only
@@ -148,9 +176,10 @@ const defineTable = <
       .map(([key, { props }]) => [camelCase(key), { ...props, key: camelCase(key), name: snakeCase(camelCase(key)) }] as const),
   );
 
-  const aliased = (alias: string) => ({ name, alias, columns, as: aliased });
+  const table = { name, columns } as unknown as Table;
+  const as = (alias: string) => aliasTable(table, alias);
 
-  return aliased(name) as unknown as DefinedTable<N, {
+  return Object.assign(table, { as }) as unknown as DefinedTable<N, {
     [K in keyof S & string as CamelCase<K>]: Column<CamelCase<K>, S[K]['props']>;
   }>;
 };
@@ -305,31 +334,58 @@ type ValueFor<V, O extends Op> =
   : O extends 'like' | 'not like' ? string
   : NonNullable<V>;
 
+type ComparisonOp = '=' | '!=' | '<' | '<=' | '>' | '>=';
+
+// comparisons also take another column, as long as its values are compatible
+type RhsFor<V, O extends Op, A extends string = string> =
+  | ValueFor<V, O>
+  | (O extends ComparisonOp ? ColumnRef<A, Column & { output: NonNullable<V> | null }> : never);
+
+type AliasOf<V> = V extends ColumnRef<infer A> ? A : never;
+
 type ExprNode =
-  | { key: string; op: Op; value: unknown }
+  | { lhs: string | ColumnRef; op: Op; value: unknown }
   | { group: 'AND' | 'OR'; exprs: ExprNode[] };
 
 declare const COLUMNS: unique symbol;
+declare const ALIASES: unique symbol;
 
-// the columns are type-only, so `.where` can infer them back into `expr`'s
-// arguments (keys, operators and values get checked and autocompleted)
-type Expr<C extends Columns> = ExprNode & { readonly [COLUMNS]?: (columns: C) => C };
+// both are type-only: `.where` infers the columns back into `expr`'s
+// arguments (keys, operators and values get checked and autocompleted), and
+// checks that every alias an expression references is the query's
+type Expr<C extends Columns, A extends string = never> = ExprNode & {
+  readonly [COLUMNS]?: (columns: C) => C;
+  readonly [ALIASES]?: A;
+};
 
-const expr = Object.assign(
-  <C extends Columns, K extends keyof C & string, O extends Op>(key: K, op: O, value: ValueFor<C[K]['output'], O>): Expr<C> => ({ key, op, value }),
-  {
-    and: <C extends Columns>(exprs: Expr<C>[]): Expr<C> => ({ group: 'AND', exprs }),
-    or: <C extends Columns>(exprs: Expr<C>[]): Expr<C> => ({ group: 'OR', exprs }),
-  },
-);
+function exprOf<C extends Columns, K extends keyof C & string, O extends Op>(key: K, op: O, value: ValueFor<C[K]['output'], O>): Expr<C>;
+function exprOf<C extends Columns, R extends ColumnRef, O extends Op, V extends RhsFor<R['col']['output'], O>>(lhs: R, op: O, rhs: V): Expr<C, R['alias'] | AliasOf<V>>;
+function exprOf(lhs: string | ColumnRef, op: Op, value: unknown): ExprNode {
+  return { lhs, op, value };
+}
 
+const expr = Object.assign(exprOf, {
+  and: <C extends Columns, A extends string = never>(exprs: Expr<C, A>[]): Expr<C, A> => ({ group: 'AND', exprs }),
+  or: <C extends Columns, A extends string = never>(exprs: Expr<C, A>[]): Expr<C, A> => ({ group: 'OR', exprs }),
+});
+
+// `rhs` is set when the value is another column
 type Condition =
-  | { col: Column; op: Op; value: unknown }
+  | { col: Column; op: Op; value: unknown; rhs?: Column }
   | { group: 'AND' | 'OR'; conditions: Condition[] };
 
-const toCondition = (table: Table, node: ExprNode): Condition => 'group' in node
-  ? { group: node.group, conditions: node.exprs.map(expr => toCondition(table, expr)) }
-  : { col: columnOf(table, node.key), op: node.op, value: node.value };
+type Scope = { table: Table; alias: string };
+
+// plain keys belong to the query's table; references must be to its alias
+const columnIn = ({ table, alias }: Scope, field: string | ColumnRef) => {
+  if (typeof field === 'string') return columnOf(table, field);
+  if (field.alias !== alias || table.columns[field.col.key] !== field.col) throw new Error(`"${field.alias}.${field.col.key}" isn't part of the query`);
+  return field.col;
+};
+
+const toCondition = (scope: Scope, node: ExprNode): Condition => 'group' in node
+  ? { group: node.group, conditions: node.exprs.map(expr => toCondition(scope, expr)) }
+  : { col: columnIn(scope, node.lhs), op: node.op, value: node.value, rhs: isRef(node.value) ? columnIn(scope, node.value) : undefined };
 
 const renderCondition = (b: SqlBuilder, qualifier?: string) => (condition: Condition): SqlBuilder => {
   if ('group' in condition) {
@@ -338,7 +394,8 @@ const renderCondition = (b: SqlBuilder, qualifier?: string) => (condition: Condi
     return b.push('(').join(conditions, ` ${group} `, renderCondition(b, qualifier)).push(')');
   }
 
-  const { col, op, value } = condition;
+  const { col, op, value, rhs } = condition;
+  if (rhs) return b.push(ref(col, qualifier), ' ', op.toUpperCase(), ' ', ref(rhs, qualifier));
   if (op === 'is' || op === 'is not') return b.push(ref(col, qualifier), ' ', op.toUpperCase(), ' NULL');
   if (op !== 'in' && op !== 'not in') return b.push(ref(col, qualifier), ' ', op.toUpperCase(), ' ').param(encode(b.dialect, col, value));
 
@@ -480,6 +537,7 @@ type Direction = 'ASC' | 'DESC';
 
 type Query<T extends Table> = {
   table: T;
+  alias: string;
   select?: string[];
   where: Condition[];
   orderBy: [Column, Direction][];
@@ -489,35 +547,39 @@ type Query<T extends Table> = {
 
 type Keys<T extends Table> = keyof T['columns'] & string;
 
-// `S` holds the selected fields, every field unless `select` says otherwise
-class QueryBuilder<T extends Table, S extends Keys<T> = Keys<T>> {
+type OrderKey<T extends Table, A extends string> = Keys<T> | ColumnRef<A>;
+
+// `A` is the query's alias, and `S` holds the selected fields, every field
+// unless `select` says otherwise
+class QueryBuilder<T extends Table, A extends string = T['name'], S extends Keys<T> = Keys<T>> {
   constructor(private readonly query: Query<T>) { }
 
   select<K extends Keys<T>>(keys: K[]) {
-    return new QueryBuilder<T, K>({ ...this.query, select: keys });
+    return new QueryBuilder<T, A, K>({ ...this.query, select: keys });
   }
 
-  where<K extends Keys<T>, O extends Op>(key: K, op: O, value: ValueFor<T['columns'][K]['output'], O>): QueryBuilder<T, S>;
-  where(expr: Expr<T['columns']>): QueryBuilder<T, S>;
-  where(...args: [string, Op, unknown] | [ExprNode]) {
-    const node = args.length === 1 ? args[0] : { key: args[0], op: args[1], value: args[2] };
-    return new QueryBuilder<T, S>({ ...this.query, where: [...this.query.where, toCondition(this.query.table, node)] });
+  where<K extends Keys<T>, O extends Op>(key: K, op: O, value: ValueFor<T['columns'][K]['output'], O>): QueryBuilder<T, A, S>;
+  where<R extends ColumnRef<A>, O extends Op>(lhs: R, op: O, rhs: RhsFor<R['col']['output'], O, A>): QueryBuilder<T, A, S>;
+  where(expr: Expr<T['columns'], A>): QueryBuilder<T, A, S>;
+  where(...args: [string | ColumnRef, Op, unknown] | [ExprNode]) {
+    const node = args.length === 1 ? args[0] : { lhs: args[0], op: args[1], value: args[2] };
+    return new QueryBuilder<T, A, S>({ ...this.query, where: [...this.query.where, toCondition(this.query, node)] });
   }
 
-  orderBy(keys: (Keys<T> | [Keys<T>, Direction])[]) {
-    const orderBy = keys.map(key => typeof key === 'string'
-      ? [columnOf(this.query.table, key), 'ASC'] as [Column, Direction]
-      : [columnOf(this.query.table, key[0]), key[1]] as [Column, Direction]);
+  orderBy(keys: (OrderKey<T, A> | [OrderKey<T, A>, Direction])[]) {
+    const orderBy = keys.map(key => Array.isArray(key)
+      ? [columnIn(this.query, key[0]), key[1]] as [Column, Direction]
+      : [columnIn(this.query, key), 'ASC'] as [Column, Direction]);
 
-    return new QueryBuilder<T, S>({ ...this.query, orderBy: [...this.query.orderBy, ...orderBy] });
+    return new QueryBuilder<T, A, S>({ ...this.query, orderBy: [...this.query.orderBy, ...orderBy] });
   }
 
   limit(n: number) {
-    return new QueryBuilder<T, S>({ ...this.query, limit: n });
+    return new QueryBuilder<T, A, S>({ ...this.query, limit: n });
   }
 
   offset(n: number) {
-    return new QueryBuilder<T, S>({ ...this.query, offset: n });
+    return new QueryBuilder<T, A, S>({ ...this.query, offset: n });
   }
 
   async all(db: IDatabase) {
@@ -582,19 +644,19 @@ class QueryBuilder<T extends Table, S extends Keys<T> = Keys<T>> {
   }
 
   private renderSelect(b: SqlBuilder, cols: Column[]) {
-    const { table, where, orderBy, limit, offset } = this.query;
+    const { table, alias, where, orderBy, limit, offset } = this.query;
 
     b.push('SELECT ');
 
     // an empty select list isn't valid SQL, but each matching row still needs
     // an (empty) object
     if (cols.length === 0) b.push('1');
-    else b.join(cols, ', ', col => b.push(ref(col, table.alias), ' AS ', quote(col.key)));
+    else b.join(cols, ', ', col => b.push(ref(col, alias), ' AS ', quote(col.key)));
 
-    b.push(' FROM ', quote(table.name), ' AS ', quote(table.alias));
+    b.push(' FROM ', quote(table.name), ' AS ', quote(alias));
 
-    renderWhere(b, where, table.alias);
-    if (orderBy.length > 0) b.push(' ORDER BY ').join(orderBy, ', ', ([col, dir]) => b.push(ref(col, table.alias), ' ', dir));
+    renderWhere(b, where, alias);
+    if (orderBy.length > 0) b.push(' ORDER BY ').join(orderBy, ', ', ([col, dir]) => b.push(ref(col, alias), ' ', dir));
     // sqlite requires LIMIT whenever there's an OFFSET, and there's no "no
     // limit" value both sqlite and postgres accept other than a huge number
     if (limit !== undefined || offset !== undefined) b.push(' LIMIT ').param(limit ?? Number.MAX_SAFE_INTEGER);
@@ -618,7 +680,15 @@ class QueryBuilder<T extends Table, S extends Keys<T> = Keys<T>> {
   }
 }
 
-const from = <T extends Table>(table: T) => new QueryBuilder({ table, where: [], orderBy: [] });
+function from<T extends Table>(table: T): QueryBuilder<T>;
+function from<A extends string, T extends Table>(aliased: Aliased<A, T>): QueryBuilder<T, A>;
+function from(source: Table | Aliased) {
+  const { table, alias } = TABLE in source
+    ? { table: source[TABLE], alias: source[ALIAS] }
+    : { table: source as Table, alias: (source as Table).name };
+
+  return new QueryBuilder({ table, alias, where: [], orderBy: [] });
+}
 
 // ─── ddl ─────────────────────────────────────────────────────────────────────
 
@@ -684,9 +754,11 @@ const defineMigrations = (migrations: Record<string, Migration>) => async (db: I
 };
 
 export {
+  type Aliased,
   type Codec,
   type Column,
   type ColumnProps,
+  type ColumnRef,
   type Dialect,
   type DialectName,
   type Expr,

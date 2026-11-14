@@ -173,4 +173,46 @@ export const checks = async (db: IDatabase) => {
 
   // @ts-expect-error unique index columns use field keys, not column names
   create.uniqueIndex(tasks, ['scheduled_at']);
+
+  const t0 = tasks.as('t0');
+  const t1 = tasks.as('t1');
+
+  const aliased = await from(t0).where(t0.status, '=', 'queued').where(t0.createdAt, '<', t0.scheduledAt).all(db);
+  assert<Equals<typeof aliased, typeof tasks.infer[]>>();
+
+  const aliasedIds = await from(t0).where('status', '=', 'queued').select(['id']).one(db);
+  assert<Equals<typeof aliasedIds, { id: string } | null>>();
+
+  from(t0)
+    .where(t0.id, '=', t0.parentId)
+    .where(t0.parentId, 'is', null)
+    .where(expr.or([expr(t0.status, 'in', ['queued']), expr(t0.attempts, '>', t0.attempts), expr('type', '=', 'a')]))
+    .orderBy([t0.createdAt, [t0.scheduledAt, 'DESC'], 'attempts']);
+
+  // @ts-expect-error references must be to the query's alias
+  from(t0).where(t1.status, '=', 'queued');
+
+  // @ts-expect-error unaliased queries don't take references to an alias
+  from(tasks).where(t0.status, '=', 'queued');
+
+  // @ts-expect-error compared columns must be to the query's alias
+  from(t0).where(t0.status, '=', t1.status);
+
+  // @ts-expect-error expr references must be to the query's alias
+  from(t0).where(expr.or([expr(t1.status, '=', 'queued')]));
+
+  // @ts-expect-error orderBy references must be to the query's alias
+  from(t0).orderBy([t1.createdAt]);
+
+  // @ts-expect-error references check enum values
+  from(t0).where(t0.status, '=', 'nope');
+
+  // @ts-expect-error compared columns must have compatible types
+  from(t0).where(t0.attempts, '=', t0.status);
+
+  // @ts-expect-error only comparisons take another column
+  from(t0).where(t0.type, 'like', t0.status);
+
+  // @ts-expect-error expr checks compared columns' types too
+  from(t0).where(expr(t0.createdAt, '<', t0.attempts));
 };

@@ -21,6 +21,7 @@ const tasks = table('tasks', t => ({
   type: t.string({ size: 48 }),
   payload: t.json(z.record(z.string(), z.any())).default({}),
   attempts: t.integer().default(0),
+  maxAttempts: t.integer().default(3),
   createdAt: t.datetime().default(() => new Date()),
   scheduledAt: t.datetime(),
 }));
@@ -248,3 +249,15 @@ const f5: {}[] = await from(tasks)
 const g1: number = await from(tasks)
   .where('scheduledAt', '<', new Date())
   .count(db);
+
+// ─── aliased tables ──────────────────────────────────────────────────────────
+
+const t0 = tasks.as('t0');
+
+const h1 = await from(t0)
+  .where(t0.status, '=', 'scheduled')
+  .all(db);
+
+const h2 = await from(t0)
+  .where(t0.attempts, '=', t0.maxAttempts)
+  .all(db);

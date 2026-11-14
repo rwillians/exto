@@ -55,6 +55,7 @@ const tasks = table('tasks', t => ({
   status: t.enum(['queued', 'running', 'done']),
   payload: t.json(z.record(z.string(), z.any())),
   attempts: t.integer().default(0),
+  maxAttempts: t.integer().default(3),
   scheduledAt: t.datetime(),
 }));
 
@@ -252,6 +253,27 @@ await from(tasks)
   .all(db);
 // WHERE ("status" = ? OR ("status" = ? AND "attempts" > ?))
 ```
+
+### Aliases
+
+An aliased table is shaped like its columns, so they can be referenced
+directly, and compared against each other:
+
+```ts
+const t = tasks.as('t');
+
+await from(t)
+  .where(t.status, '=', 'queued')
+  .where(t.attempts, '<', t.maxAttempts)
+  .orderBy([t.scheduledAt])
+  .all(db);
+// SELECT ... FROM "tasks" AS "t"
+// WHERE "t"."status" = ? AND "t"."attempts" < "t"."max_attempts"
+// ORDER BY "t"."scheduled_at" ASC
+```
+
+Columns compare with `=`, `!=`, `<`, `<=`, `>` and `>=`, as long as their
+types match.
 
 
 ## Update

@@ -394,6 +394,38 @@ for (const adapter of adapters) {
       test('rejects unknown keys in expressions', () => {
         expect(() => from(tasks).where(expr.or([expr('nope' as any, '=', 1)]))).toThrow();
       });
+
+      test('filters by aliased columns, against values or other columns', async () => {
+        const [first, second, third] = await insertTasks();
+        const p = (n: number) => db.dialect.placeholder(n);
+        const t = tasks.as('t');
+
+        // only the third task is scheduled after it was created
+        const rows = await from(t)
+          .where(t.type, '=', 'Other')
+          .where(t.createdAt, '<', t.scheduledAt)
+          .orderBy([[t.scheduledAt, 'DESC'], 'id'])
+          .select(['id'])
+          .all(db);
+
+        expect(rows).toEqual([{ id: third!.id }]);
+        expect(sqls.at(-1)).toBe(`SELECT "t"."id" AS "id" FROM "tasks" AS "t" WHERE "t"."type" = ${p(1)} AND "t"."created_at" < "t"."scheduled_at" ORDER BY "t"."scheduled_at" DESC, "t"."id" ASC`);
+
+        const grouped = await from(t)
+          .where(expr.or([expr(t.createdAt, '>=', t.scheduledAt), expr(t.status, 'in', ['queued'])]))
+          .all(db);
+
+        expect(grouped.map(task => task.id).sort()).toEqual([first!.id, second!.id, third!.id].sort());
+      });
+
+      test('rejects references to another alias or table', () => {
+        const t = tasks.as('t');
+
+        expect(() => from(tasks.as('u')).where(t.status as any, '=', 'queued')).toThrow(`"t.status" isn't part of the query`);
+        expect(() => from(tasks).where(t.createdAt as any, '<', t.scheduledAt as any)).toThrow(`"t.createdAt" isn't part of the query`);
+        expect(() => from(t).where(expr(things.as('t').body as any, '=', 'x'))).toThrow(`"t.body" isn't part of the query`);
+        expect(() => from(t).orderBy([tasks.as('u').id as any])).toThrow(`"u.id" isn't part of the query`);
+      });
     });
 
     describe('update', () => {
@@ -432,6 +464,17 @@ for (const adapter of adapters) {
 
         expect(updated).toEqual([{ attempts: 6 }]);
         expect(await from(tasks).where(expr.or([expr('type', '=', 'Other'), expr('parentId', 'is not', null)])).delete(db, { returning: ['type'] })).toEqual([{ type: 'Other' }]);
+      });
+
+      test('filters by aliased columns', async () => {
+        const [, , third] = await insertTasks();
+        const t = tasks.as('t');
+        const query = from(t).where(t.createdAt, '<', t.scheduledAt);
+
+        expect(await query.update(db, { set: { status: 'running' }, returning: ['id'] })).toEqual([{ id: third!.id }]);
+        expect(sqls.at(-1)).toContain(' WHERE "created_at" < "scheduled_at" RETURNING ');
+        expect(await query.delete(db, { returning: ['status'] })).toEqual([{ status: 'running' }]);
+        expect(sqls.at(-1)).toBe('DELETE FROM "tasks" WHERE "created_at" < "scheduled_at" RETURNING "status" AS "status"');
       });
 
       test('rejects empty changes and bounded queries', async () => {
