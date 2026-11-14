@@ -547,9 +547,15 @@ const exprOf: ExprOf = (lhs: Operand, op: Op, rhs: unknown) => operand(compare(l
 const group = (op: 'AND' | 'OR') => <E extends Condition>(exprs: E[]) =>
   operand({ kind: 'group', op, nodes: exprs.map(expr => expr[NODE]) }) as unknown as Condition<AliasesOf<E>>;
 
+const call = (fn: 'COUNT' | 'SUM') => <O extends Operand>(arg: O) =>
+  operand({ kind: 'call', fn, arg: arg[NODE] }) as unknown as Operand<AliasesOf<O>, number, never>;
+
+// aggregates: a sum of no rows is 0, rather than SQL's null
 const expr = Object.assign(exprOf, {
   and: group('AND'),
   or: group('OR'),
+  count: call('COUNT'),
+  sum: call('SUM') as <O extends Operand<string, number | null>>(arg: O) => Operand<AliasesOf<O>, number, never>,
 });
 
 // a fragment of raw SQL: interpolated operands are rendered in place, and
@@ -745,8 +751,10 @@ type Field = [key: string, node: Node];
 type Query = {
   table: Table;
   scope: Scope;
+  joins: { table: Table; on: Node }[];
   select?: Field[];
   where: Node[];
+  groupBy: Node[];
   orderBy: [Node, Direction][];
   limit?: number;
   offset?: number;
@@ -780,6 +788,22 @@ class QueryBuilder<T extends Table, A extends string = AliasOf<T>, N extends str
   where(...args: [Operand, Op, unknown] | [Operand]) {
     const node = args.length === 1 ? args[0][NODE] : compare(...args);
     return new QueryBuilder<T, A, N, R>({ ...this.query, where: [...this.query.where, assertInScope(this.query.scope, node)] });
+  }
+
+  // the joined table's columns read as null for rows it has no match for
+  leftJoin<J extends Table>(table: J, on: Condition<A | AliasOf<J>>) {
+    const alias = table[ALIAS];
+    if (this.query.scope.has(alias)) throw new Error(`"${alias}" is already part of the query, join it under another alias`);
+
+    const scope = new Map(this.query.scope).set(alias, table);
+    const joins = [...this.query.joins, { table, on: assertInScope(scope, on[NODE]) }];
+
+    return new QueryBuilder<T, A | AliasOf<J>, N | AliasOf<J>, R>({ ...this.query, scope, joins });
+  }
+
+  groupBy(operands: Operand<A>[]) {
+    const groupBy = operands.map(item => assertInScope(this.query.scope, item[NODE]));
+    return new QueryBuilder<T, A, N, R>({ ...this.query, groupBy: [...this.query.groupBy, ...groupBy] });
   }
 
   orderBy(operands: (Operand<A> | [Operand<A>, Direction])[]) {
@@ -863,7 +887,7 @@ class QueryBuilder<T extends Table, A extends string = AliasOf<T>, N extends str
   }
 
   private renderSelect(b: SqlBuilder, fields: Field[]) {
-    const { table, where, orderBy, limit, offset } = this.query;
+    const { table, joins, where, groupBy, orderBy, limit, offset } = this.query;
 
     b.push('SELECT ');
 
@@ -873,8 +897,10 @@ class QueryBuilder<T extends Table, A extends string = AliasOf<T>, N extends str
     else b.join(fields, ', ', ([key, node]) => renderNode(b, node).push(' AS ', quote(key)));
 
     renderTable(b.push(' FROM '), table);
+    joins.forEach(join => renderNode(renderTable(b.push(' LEFT JOIN '), join.table).push(' ON '), join.on));
     renderWhere(b, where);
 
+    if (groupBy.length > 0) b.push(' GROUP BY ').join(groupBy, ', ', node => renderNode(b, node));
     if (orderBy.length > 0) b.push(' ORDER BY ').join(orderBy, ', ', ([node, dir]) => renderNode(b, node).push(' ', dir));
     // sqlite requires LIMIT whenever there's an OFFSET, and there's no "no
     // limit" value both sqlite and postgres accept other than a huge number
@@ -892,9 +918,9 @@ class QueryBuilder<T extends Table, A extends string = AliasOf<T>, N extends str
   // UPDATE/DELETE ... ORDER BY/LIMIT isn't portable, so refuse it rather than
   // silently affecting more rows than the query suggests
   private assertPlain(operation: string) {
-    const { select, orderBy, limit, offset } = this.query;
-    if (select || orderBy.length > 0 || limit !== undefined || offset !== undefined) {
-      throw new Error(`Cannot ${operation} with select, orderBy, limit or offset`);
+    const { joins, select, groupBy, orderBy, limit, offset } = this.query;
+    if (joins.length > 0 || select || groupBy.length > 0 || orderBy.length > 0 || limit !== undefined || offset !== undefined) {
+      throw new Error(`Cannot ${operation} with leftJoin, select, groupBy, orderBy, limit or offset`);
     }
   }
 }
@@ -902,7 +928,9 @@ class QueryBuilder<T extends Table, A extends string = AliasOf<T>, N extends str
 const from = <T extends Table>(table: T) => new QueryBuilder<T>({
   table,
   scope: new Map([[table[ALIAS], table]]),
+  joins: [],
   where: [],
+  groupBy: [],
   orderBy: [],
 });
 
