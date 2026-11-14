@@ -1,6 +1,6 @@
 {
   "name": "@rwillians/exto",
-  "description": "A zero-dependencies teeny tiny ORM for SQL databases.",
+  "description": "Type-safe SQL for Bun: import .sql files, typed from your migrations.",
   "version": "0.1.2",
   "author": "Rafael Willians <me@rwillians.com>",
   "license": "MIT",
@@ -12,12 +12,9 @@
     "url": "git://github.com/rwillians/exto.git"
   },
   "keywords": [
-    "builder",
     "bun",
-    "orm",
+    "migrations",
     "postgres",
-    "query builder",
-    "query",
     "sql",
     "sqlite",
     "type-safe",
@@ -27,25 +24,16 @@
   "type": "module",
   "module": "dist/esm/index.js",
   "main": "dist/cjs/index.js",
-  "files": ["dist/", "LICENSE"],
+  "files": [
+    "dist/",
+    "LICENSE"
+  ],
   "exports": {
     ".": {
       "types": "./dist/types/index.d.ts",
       "import": "./dist/esm/index.js",
       "require": "./dist/cjs/index.js",
       "default": "./dist/cjs/index.js"
-    },
-    "./bun-postgres": {
-      "types": "./dist/types/bun-postgres.d.ts",
-      "import": "./dist/esm/bun-postgres.js",
-      "require": "./dist/cjs/bun-postgres.js",
-      "default": "./dist/cjs/bun-postgres.js"
-    },
-    "./bun-sqlite": {
-      "types": "./dist/types/bun-sqlite.d.ts",
-      "import": "./dist/esm/bun-sqlite.js",
-      "require": "./dist/cjs/bun-sqlite.js",
-      "default": "./dist/cjs/bun-sqlite.js"
     }
   },
   "scripts": {
@@ -57,9 +45,9 @@
   },
   "devDependencies": {
     "@types/bun": "latest",
-    "zod": "^4.6.7"
+    "typescript": "^7.1.0-dev.20261114.1"
   },
   "peerDependencies": {
-    "typescript": "^7.0.2"
+    "typescript": "^7.1.0-0"
   }
 }
