@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
 import { from, into } from '../src';
 import { jane, minutesAgo, task, tasks, users } from './fixtures';
-import { type Database, fresh } from './helpers';
+import { type Database, suite } from './helpers';
 
-describe('column types', () => {
+suite('column types', (fresh) => {
   let db: Database;
 
   beforeEach(async () => {

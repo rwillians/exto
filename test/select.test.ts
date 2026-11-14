@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
 import { from, into } from '../src';
 import { type Status, type Task, minutesAgo, minutesFromNow, task, tasks, users } from './fixtures';
-import { type Database, type Equals, type Expand, assert, fresh } from './helpers';
+import { type Database, type Equals, type Expand, assert, suite } from './helpers';
 
-describe('select', () => {
+suite('select', (fresh) => {
   let db: Database;
   let sqls: string[];
   let rows: Task[];

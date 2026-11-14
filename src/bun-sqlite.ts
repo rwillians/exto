@@ -30,7 +30,7 @@ const dialect: Dialect = {
   name: 'sqlite',
   placeholder: () => '?',
   type: (col) => TYPES[col.type],
-  json: (sql, path, text) => `${sql} ${text ? '->>' : '->'} ${jsonPath(path)}`,
+  json: (sql, path, type) => `${sql} ${type === 'JSON' ? '->' : '->>'} ${jsonPath(path)}`,
   codecs: {
     BOOLEAN:   { encode: (value: boolean) => (value ? 1 : 0), decode: (value: number | bigint) => Number(value) === 1 },
     FLOAT:     numeric,
@@ -52,6 +52,10 @@ class BunSQLite implements IDatabase {
   async execute(sql: string, params: unknown[]) {
     // without safe integers, bun:sqlite rounds anything beyond 2^53
     return this.conn.prepare(sql).safeIntegers(true).all(...(params as SQLQueryBindings[])) as Row[];
+  }
+
+  async close() {
+    this.conn.close();
   }
 
   // bun:sqlite's own `transaction()` is synchronous and would commit before an

@@ -328,20 +328,21 @@ type Codec = {
 };
 
 // the built-in adapters' names; other adapters may name themselves anything
-type DialectName = 'sqlite' | (string & {});
+type DialectName = 'postgres' | 'sqlite' | (string & {});
 
 /**
  * Everything that differs between database engines. SQL generation, param
  * collection, validation and encoding/decoding all live in the core.
  *
- * `json` extracts a field nested in a JSON column: as an SQL value when
- * `text` is true, as a JSON document otherwise.
+ * `json` extracts a field nested in a JSON column, as an SQL value of the
+ * field's type: a JSON document itself when the field is a JSON one (a
+ * record, or embedded fields).
  */
 interface Dialect {
   name: DialectName;
   placeholder(index: number): string;
   type(column: Column): string;
-  json(sql: string, path: string[], text: boolean): string;
+  json(sql: string, path: string[], type: Primitive): string;
   codecs: Record<Primitive, Codec>;
 }
 
@@ -446,14 +447,12 @@ const renderTable = (b: SqlBuilder, table: Table) => table[ALIAS] === table[NAME
   ? b.push(quote(table[NAME]))
   : b.push(quote(table[NAME]), ' AS ', quote(table[ALIAS]));
 
-// a nested field renders as an SQL value, unless it holds a JSON document
-// itself (a record, or embedded fields)
 const renderNode = (b: SqlBuilder, node: Node): SqlBuilder => {
   switch (node.kind) {
     case 'ref': {
       const sql = `${quote(node.alias)}.${quote(node.col.name)}`;
       if (node.path.length === 0) return b.push(sql);
-      return b.push(b.dialect.json(sql, node.path.map(field => field.name), node.path.at(-1)!.type !== 'JSON'));
+      return b.push(b.dialect.json(sql, node.path.map(field => field.name), node.path.at(-1)!.type));
     }
 
     case 'compare': {

@@ -1,9 +1,9 @@
-import { beforeEach, describe, expect, test } from 'bun:test';
+import { beforeEach, expect, test } from 'bun:test';
 import { from, into } from '../src';
 import { type User, jane, users } from './fixtures';
-import { type Database, type Equals, assert, fresh } from './helpers';
+import { type Database, type Equals, assert, suite } from './helpers';
 
-describe('insert on conflict', () => {
+suite('insert on conflict', (fresh) => {
   let db: Database;
   let existing: User;
 

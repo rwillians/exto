@@ -35,6 +35,12 @@
       "require": "./dist/cjs/index.js",
       "default": "./dist/cjs/index.js"
     },
+    "./bun-postgres": {
+      "types": "./dist/types/bun-postgres.d.ts",
+      "import": "./dist/esm/bun-postgres.js",
+      "require": "./dist/cjs/bun-postgres.js",
+      "default": "./dist/cjs/bun-postgres.js"
+    },
     "./bun-sqlite": {
       "types": "./dist/types/bun-sqlite.d.ts",
       "import": "./dist/esm/bun-sqlite.js",

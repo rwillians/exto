@@ -1,9 +1,9 @@
-import { beforeEach, describe, expect, test } from 'bun:test';
+import { beforeEach, expect, test } from 'bun:test';
 import { expr, from, into } from '../src';
 import { type Status, task, tasks } from './fixtures';
-import { type Database, type Equals, assert, fresh } from './helpers';
+import { type Database, type Equals, assert, suite } from './helpers';
 
-describe('group by', () => {
+suite('group by', (fresh) => {
   let db: Database;
 
   beforeEach(async () => {

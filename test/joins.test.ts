@@ -1,9 +1,9 @@
-import { beforeEach, describe, expect, test } from 'bun:test';
+import { beforeEach, expect, test } from 'bun:test';
 import { expr, from, into } from '../src';
 import { type Task, task, tasks } from './fixtures';
-import { type Database, type Equals, type Expand, assert, fresh } from './helpers';
+import { type Database, type Equals, type Expand, assert, suite } from './helpers';
 
-describe('left join', () => {
+suite('left join', (fresh) => {
   let db: Database;
   let a: Task;
   let b: Task;
