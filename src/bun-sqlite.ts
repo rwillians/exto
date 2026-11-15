@@ -56,7 +56,7 @@ const dialect: Dialect = {
   // LIKE already ignores the case of ASCII letters
   operators: { 'ILIKE': 'LIKE', 'NOT ILIKE': 'NOT LIKE' },
   jsonOf,
-  aggregate: (entries, filter) => {
+  collect: (entries, filter) => {
     const object = `json_object(${entries.map(([key, sql]) => `${literal(key)}, ${sql}`).join(', ')})`;
     return `json_group_array(${object})${filter ? ` FILTER (WHERE ${filter})` : ''}`;
   },

@@ -134,6 +134,19 @@ suite('select', (fresh) => {
     });
   });
 
+  describe('distinct', () => {
+    test('leaves out duplicate rows', async () => {
+      const distinct = await from(tasks).select({ status: tasks.status }).distinct().orderBy([tasks.status]).all(db);
+
+      expect(statuses(distinct)).toEqual(['queued', 'running', 'scheduled']);
+    });
+
+    test('counts the distinct rows', async () => {
+      expect(await from(tasks).select({ status: tasks.status }).distinct().count(db)).toBe(3);
+      expect(await from(tasks).distinct().count(db)).toBe(4);
+    });
+  });
+
   test('builders are immutable', async () => {
     const base = from(tasks);
 
@@ -177,6 +190,9 @@ export const typeChecks = async (db: Database) => {
 
   const count = await from(tasks).count(db);
   assert<Equals<typeof count, number>>();
+
+  const distinct = await from(tasks).select({ status: tasks.status }).distinct().all(db);
+  assert<Equals<typeof distinct, { status: Status }[]>>();
 
   // @ts-expect-error projections take references to the query's table only
   from(tasks).select({ id: users.id });

@@ -1,5 +1,5 @@
 import { beforeEach, expect, test } from 'bun:test';
-import { from, into } from '../src';
+import { expr, from, into } from '../src';
 import { type Task, minutesAgo, minutesFromNow, task, tasks } from './fixtures';
 import { type Database, type Equals, assert, suite } from './helpers';
 
@@ -76,6 +76,15 @@ suite('update', (fresh) => {
 
     await expect(query().update(db, { set })).rejects.toThrow();
     await expect(query().update(db, { set: { attempts: -1 } })).rejects.toThrow();
+  });
+
+  test('refuses queries that read anything but plain rows', async () => {
+    const other = tasks.as('other');
+    const set = { status: 'running' } as const;
+
+    await expect(query().innerJoin(other, expr(other.id, '=', tasks.parentId)).update(db, { set })).rejects.toThrow(/^Cannot update with joins/);
+    await expect(query().distinct().update(db, { set })).rejects.toThrow(/^Cannot update with/);
+    await expect(query().having(expr.count(tasks.id), '>', 0).delete(db)).rejects.toThrow(/^Cannot delete with/);
   });
 });
 

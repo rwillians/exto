@@ -227,19 +227,25 @@ type Op =
   | 'IN' | 'NOT IN'
   | 'BETWEEN' | 'NOT BETWEEN';
 
+type Fn = 'COUNT' | 'SUM' | 'MIN' | 'MAX';
+
+// a plain value, encoded the way the node it goes with stores its values
+type Value = { kind: 'value'; value: unknown };
+
 // what an operand renders to: a column (or a field nested in one), a fragment
 // of raw SQL, or an expression built from other nodes
 type Node =
   | { kind: 'ref'; alias: string; col: Column; path: Column[] }
   | { kind: 'fragment'; strings: readonly string[]; values: unknown[] }
-  | { kind: 'call'; fn: 'COUNT' | 'SUM'; arg: Node }
-  | { kind: 'compare'; lhs: Node; op: Op; rhs: Node | { kind: 'value'; value: unknown } }
+  | { kind: 'call'; fn: Fn; arg: Node; distinct?: true }
+  | { kind: 'coalesce'; nodes: [Node, ...(Node | Value)[]] }
+  | { kind: 'compare'; lhs: Node; op: Op; rhs: Node | Value }
   | { kind: 'group'; op: 'AND' | 'OR'; nodes: Node[] }
-  | { kind: 'aggregate'; fields: Field[]; filter?: Node };
+  | { kind: 'collect'; fields: Field[]; filter?: Node };
 
 // anything that renders to SQL. Type only: `aliases` are the tables it reads
 // from, `value` is what it evaluates to, and `nulls` are the aliases whose
-// missing rows turn it into null (in a left join)
+// missing rows, all of them, turn it into null (in an outer join)
 type Operand<A extends string = string, V = unknown, N extends string = string> = {
   readonly [NODE]: Node;
   readonly [OPERAND]: { aliases: A; value: V; nulls: N };
@@ -389,7 +395,7 @@ type DialectName = 'postgres' | 'sqlite' | (string & {});
  * record, or embedded fields).
  *
  * `jsonOf` renders a column's value the way it reads inside a JSON document
- * (see `fromJson`), and `aggregate` a JSON array with an object per row:
+ * (see `fromJson`), and `collect` a JSON array with an object per row:
  * `entries` are its keys and their JSON values, and `filter` leaves out the
  * rows it's false for. Parameters are positional, so their SQL has to appear
  * in the given order, `filter` last.
@@ -401,7 +407,7 @@ interface Dialect {
   generated(column: Column): string | undefined;
   json(sql: string, path: string[], type: Primitive): string;
   jsonOf(sql: string, type: Primitive): string;
-  aggregate(entries: [key: string, sql: string][], filter: string | undefined): string;
+  collect(entries: [key: string, sql: string][], filter: string | undefined): string;
   // operators the database spells differently, e.g. ILIKE
   operators: Partial<Record<Op, string>>;
   codecs: Record<Primitive, Codec>;
@@ -529,10 +535,17 @@ const renderNode = (b: SqlBuilder, node: Node): SqlBuilder => {
       return b.push(b.dialect.json(sql, node.path.map(field => field.name), node.path.at(-1)!.type));
     }
 
-    case 'aggregate': {
+    case 'collect': {
       const entries = node.fields.map(([key, field]): [string, string] => [key, b.capture(() => renderJson(b, field))]);
       const filter = node.filter && b.capture(() => renderNode(b, node.filter!));
-      return b.push(b.dialect.aggregate(entries, filter));
+      return b.push(b.dialect.collect(entries, filter));
+    }
+
+    case 'coalesce': {
+      const [first] = node.nodes;
+      return b.push('COALESCE(').join(node.nodes, ', ', item => item.kind === 'value'
+        ? b.param(encodeFor(b.dialect, first, item.value))
+        : renderNode(b, item)).push(')');
     }
 
     case 'compare': {
@@ -579,10 +592,12 @@ const renderNode = (b: SqlBuilder, node: Node): SqlBuilder => {
       });
       return b;
 
-    case 'call':
+    case 'call': {
+      const distinct = node.distinct ? 'DISTINCT ' : '';
       return node.fn === 'SUM'
-        ? renderNode(b.push('COALESCE(SUM('), node.arg).push('), 0)')
-        : renderNode(b.push('COUNT('), node.arg).push(')');
+        ? renderNode(b.push('COALESCE(SUM(', distinct), node.arg).push('), 0)')
+        : renderNode(b.push(node.fn, '(', distinct), node.arg).push(')');
+    }
   }
 };
 
@@ -600,8 +615,17 @@ const fromJsonFor = (node: Node, value: unknown) => node.kind === 'ref'
   ? fromJson(node.path.at(-1) ?? node.col, value)
   : value;
 
+// the node whose values another one reads like: the lowest and highest values
+// read like those they're picked from, and a coalesce like its first operand
+const valuesOf = (node: Node): Node => {
+  if (node.kind === 'call' && (node.fn === 'MIN' || node.fn === 'MAX')) return valuesOf(node.arg);
+  if (node.kind === 'coalesce') return valuesOf(node.nodes[0]);
+  return node;
+};
+
 // values compared with a column are encoded the way the column stores them
-const encodeFor = (dialect: Dialect, node: Node, value: unknown) => {
+const encodeFor = (dialect: Dialect, operand: Node, value: unknown) => {
+  const node = valuesOf(operand);
   if (node.kind !== 'ref') return value;
   if (node.path.length === 0) return encode(dialect, node.col, value);
 
@@ -609,9 +633,10 @@ const encodeFor = (dialect: Dialect, node: Node, value: unknown) => {
   return leaf.type === 'JSON' ? dialect.codecs.JSON.encode(toJson(leaf, value)) : toJson(leaf, value);
 };
 
-const decodeFor = (dialect: Dialect, node: Node) => (value: unknown) => {
+const decodeFor = (dialect: Dialect, operand: Node) => (value: unknown) => {
+  const node = valuesOf(operand);
   if (node.kind === 'call') return Number(value ?? 0);
-  if (node.kind === 'aggregate') return (dialect.codecs.JSON.decode(value) as Row[])
+  if (node.kind === 'collect') return (dialect.codecs.JSON.decode(value) as Row[])
     .map(row => Object.fromEntries(node.fields.map(([key, field]) => [key, fromJsonFor(field, row[key])])));
   if (node.kind !== 'ref') return typeof value === 'bigint' ? Number(value) : value;
   if (node.path.length === 0) return decode(dialect, node.col, value);
@@ -628,7 +653,9 @@ type AliasesOf<O> = O extends { readonly [OPERAND]: { aliases: infer A extends s
 type NullsOf<O> = O extends { readonly [OPERAND]: { nulls: infer N extends string } } ? N : never;
 
 // the value an operand reads in a query where the `N` aliases may be missing
-type ValueIn<O, N extends string> = [NullsOf<O> & N] extends [never] ? ValueOf<O> : ValueOf<O> | null;
+type ValueIn<O, N extends string> = [NullsOf<O>] extends [never]
+  ? ValueOf<O>
+  : [Exclude<NullsOf<O>, N>] extends [never] ? ValueOf<O> | null : ValueOf<O>;
 
 // operators that also take another operand
 type ColumnOp = '=' | '!=' | '<' | '<=' | '>' | '>=' | 'IS DISTINCT FROM' | 'IS NOT DISTINCT FROM';
@@ -715,20 +742,48 @@ const exprOf: ExprOf = (lhs: Operand, op: Op, rhs: unknown) => operand(compare(l
 const group = (op: 'AND' | 'OR') => <E extends Predicate>(exprs: E[]) =>
   operand({ kind: 'group', op, nodes: exprs.map(expr => expr[NODE]) }) as unknown as Condition<AliasesOf<E>>;
 
-const call = (fn: 'COUNT' | 'SUM') => <O extends Operand>(arg: O) =>
-  operand({ kind: 'call', fn, arg: arg[NODE] }) as unknown as Operand<AliasesOf<O>, number, never>;
+const call = (fn: Fn, distinct?: true) => (arg: Operand) => operand({ kind: 'call', fn, arg: arg[NODE], ...(distinct && { distinct }) });
+
+type Counted = <O extends Operand>(arg: O) => Operand<AliasesOf<O>, number, never>;
+type Summed = <O extends Operand<string, number | null>>(arg: O) => Operand<AliasesOf<O>, number, never>;
+
+// values with an order to them (booleans have none on postgres)
+type Orderable = number | bigint | string | Date;
+
+// a group of no rows has neither a lowest nor a highest value
+type Picked = <O extends Operand<string, Orderable | null>>(arg: O) => Operand<AliasesOf<O>, NonNullable<ValueOf<O>> | null, never>;
+
+// the operands (and plain values) of a coalesce that never read null, and
+// those that read null only when a join leaves their table's row missing
+type Sure<U> = U extends Operand ? null extends ValueOf<U> ? never : [NullsOf<U>] extends [never] ? U : never : U;
+type Joined<U> = U extends Operand ? null extends ValueOf<U> ? never : U : never;
+
+// coalesce reads null only when all of its operands may: never once any of
+// them is sure to read a value, otherwise when the rows of every table its
+// other operands read from are missing
+type Coalesce = <L extends Operand, const R extends readonly (Operand<string, NonNullable<ValueOf<L>> | null> | NonNullable<ValueOf<L>>)[]>(lhs: L, ...rest: R) => Operand<
+  AliasesOf<L | R[number]>,
+  NonNullable<ValueOf<L>> | ([Joined<L | R[number]> | Sure<L | R[number]>] extends [never] ? null : never),
+  [Sure<L | R[number]>] extends [never] ? NullsOf<Joined<L | R[number]>> : never
+>;
+
+// plain values are encoded the way the first operand stores its values
+const coalesce: Coalesce = (lhs: Operand, ...rest: readonly unknown[]) => operand({
+  kind: 'coalesce',
+  nodes: [lhs[NODE], ...rest.map(item => isOperand(item) ? item[NODE] : { kind: 'value' as const, value: item })],
+}) as never;
 
 const isTable = (value: unknown): value is Table => typeof value === 'object' && value !== null && NAME in value;
 
 // the rows of a table (or of a projection) in a group, as a list. Rows a
 // left join found no match for are left out, telling them apart by a
 // column that's never null: the table's primary key, or any required one
-type Aggregate = {
+type Collect = {
   <T extends Table>(table: T): Operand<AliasOf<T>, InferForSelect<ColumnsOf<T>>[], never>;
   <P extends Record<string, Operand>>(projection: P): Operand<AliasesOf<P[keyof P]>, Projected<P, never>[], never>;
 };
 
-const aggregate: Aggregate = (source: Table | Record<string, Operand>) => {
+const collect: Collect = (source: Table | Record<string, Operand>) => {
   const fields = Object.entries(source).map(([key, value]): Field => isOperand(value)
     ? [key, value[NODE]]
     : raise(`"${key}" must be a column reference or an expression`));
@@ -742,17 +797,21 @@ const aggregate: Aggregate = (source: Table | Record<string, Operand>) => {
     .sort((a, b) => Number(b.col.primaryKey ?? false) - Number(a.col.primaryKey ?? false))[0];
 
   const filter = required && compare(operand(required), 'IS NOT', null);
-  return operand({ kind: 'aggregate', fields, filter }) as never;
+  return operand({ kind: 'collect', fields, filter }) as never;
 };
 
 // aggregates: a sum of no rows is 0, rather than SQL's null, and so is a
-// count; an aggregate of no rows is an empty list
+// count; a collect of no rows is an empty list. `distinct` counts (or sums)
+// each value once
 const expr = Object.assign(exprOf, {
   and: group('AND'),
   or: group('OR'),
-  count: call('COUNT'),
-  sum: call('SUM') as <O extends Operand<string, number | null>>(arg: O) => Operand<AliasesOf<O>, number, never>,
-  aggregate,
+  coalesce,
+  count: Object.assign(call('COUNT') as Counted, { distinct: call('COUNT', true) as Counted }),
+  sum: Object.assign(call('SUM') as Summed, { distinct: call('SUM', true) as Summed }),
+  min: call('MIN') as Picked,
+  max: call('MAX') as Picked,
+  collect,
 });
 
 // a fragment of raw SQL: interpolated operands are rendered in place, and
@@ -785,7 +844,10 @@ const assertInScope = (scope: Scope, node: Node): Node => {
     case 'call':
       assertInScope(scope, node.arg);
       break;
-    case 'aggregate':
+    case 'coalesce':
+      node.nodes.forEach(item => item.kind !== 'value' && assertInScope(scope, item));
+      break;
+    case 'collect':
       node.fields.forEach(([, field]) => assertInScope(scope, field));
       if (node.filter) assertInScope(scope, node.filter);
       break;
@@ -953,13 +1015,17 @@ type Direction = 'ASC' | 'DESC';
 // a field is an operand read under a key of its own
 type Field = [key: string, node: Node];
 
+type Join = 'INNER' | 'LEFT' | 'RIGHT';
+
 type Query = {
   table: Table;
   scope: Scope;
-  joins: { table: Table; on: Node }[];
+  joins: { kind: Join; table: Table; on: Node }[];
   select?: Field[];
+  distinct?: true;
   where: Node[];
   groupBy: Node[];
+  having: Node[];
   orderBy: [Node, Direction][];
   limit?: number;
   offset?: number;
@@ -970,14 +1036,24 @@ type Projected<P, N extends string> = Expand<{
   [K in keyof P & string]: ValueIn<P[K], N>;
 }>;
 
+// the row a query reads: a whole row of `T` (every column null when `T`'s
+// row may be missing, in a right join) unless `select` picked a projection
+type RowOf<T extends Table, N extends string, S> = [S] extends [Record<string, Operand>]
+  ? Projected<S, N>
+  : [AliasOf<T> & N] extends [never]
+  ? InferForSelect<ColumnsOf<T>>
+  : Expand<{ [K in keyof ColumnsOf<T>]: ColumnsOf<T>[K]['output'] | null }>;
+
+const conditionOf = (args: [Operand, Op, unknown] | [Operand]) => args.length === 1 ? args[0][NODE] : compare(...args);
+
 const count = (value: number, name: string) => Number.isSafeInteger(value) && value >= 0
   ? value
   : raise(`${name} must be a non-negative integer, got ${value}`);
 
 // `T` is the queried table, `A` the aliases in scope, `N` those of them whose
-// rows may be missing (left joined), and `R` the row the query reads: a whole
-// row of `T` unless `select` says otherwise
-class QueryBuilder<T extends Table, A extends string = AliasOf<T>, N extends string = never, R = InferForSelect<ColumnsOf<T>>> {
+// rows may be missing (joined from the other side of an outer join), and `S`
+// the projection `select` picked, if any (see `RowOf`)
+class QueryBuilder<T extends Table, A extends string = AliasOf<T>, N extends string = never, S = undefined> {
   constructor(private readonly query: Query) { }
 
   select<P extends Record<string, Operand<A>>>(projection: P) {
@@ -985,30 +1061,48 @@ class QueryBuilder<T extends Table, A extends string = AliasOf<T>, N extends str
       ? [key, assertInScope(this.query.scope, value[NODE])]
       : raise(`"${key}" must be a column reference or an expression`));
 
-    return new QueryBuilder<T, A, N, Projected<P, N>>({ ...this.query, select: fields });
+    return new QueryBuilder<T, A, N, P>({ ...this.query, select: fields });
   }
 
-  where<L extends Operand<A>, O extends Op>(lhs: L, op: O, rhs: RhsFor<ValueIn<L, N>, O, A>): QueryBuilder<T, A, N, R>;
-  where(condition: Predicate<A>): QueryBuilder<T, A, N, R>;
+  // leaves out duplicate rows
+  distinct() {
+    return new QueryBuilder<T, A, N, S>({ ...this.query, distinct: true });
+  }
+
+  where<L extends Operand<A>, O extends Op>(lhs: L, op: O, rhs: RhsFor<ValueIn<L, N>, O, A>): QueryBuilder<T, A, N, S>;
+  where(condition: Predicate<A>): QueryBuilder<T, A, N, S>;
   where(...args: [Operand, Op, unknown] | [Operand]) {
-    const node = args.length === 1 ? args[0][NODE] : compare(...args);
-    return new QueryBuilder<T, A, N, R>({ ...this.query, where: [...this.query.where, assertInScope(this.query.scope, node)] });
+    const node = assertInScope(this.query.scope, conditionOf(args));
+    return new QueryBuilder<T, A, N, S>({ ...this.query, where: [...this.query.where, node] });
+  }
+
+  // only rows with a match in the joined table
+  innerJoin<J extends Table>(table: J, on: Predicate<A | AliasOf<J>>) {
+    return new QueryBuilder<T, A | AliasOf<J>, N, S>(this.join('INNER', table, on));
   }
 
   // the joined table's columns read as null for rows it has no match for
   leftJoin<J extends Table>(table: J, on: Predicate<A | AliasOf<J>>) {
-    const alias = table[ALIAS];
-    if (this.query.scope.has(alias)) throw new Error(`"${alias}" is already part of the query, join it under another alias`);
+    return new QueryBuilder<T, A | AliasOf<J>, N | AliasOf<J>, S>(this.join('LEFT', table, on));
+  }
 
-    const scope = new Map(this.query.scope).set(alias, table);
-    const joins = [...this.query.joins, { table, on: assertInScope(scope, on[NODE]) }];
-
-    return new QueryBuilder<T, A | AliasOf<J>, N | AliasOf<J>, R>({ ...this.query, scope, joins });
+  // every row of the joined table, and the columns of the tables joined so
+  // far read as null for rows they have no match for
+  rightJoin<J extends Table>(table: J, on: Predicate<A | AliasOf<J>>) {
+    return new QueryBuilder<T, A | AliasOf<J>, A, S>(this.join('RIGHT', table, on));
   }
 
   groupBy(operands: Operand<A>[]) {
     const groupBy = operands.map(item => assertInScope(this.query.scope, item[NODE]));
-    return new QueryBuilder<T, A, N, R>({ ...this.query, groupBy: [...this.query.groupBy, ...groupBy] });
+    return new QueryBuilder<T, A, N, S>({ ...this.query, groupBy: [...this.query.groupBy, ...groupBy] });
+  }
+
+  // filters the groups, the way `where` filters rows
+  having<L extends Operand<A>, O extends Op>(lhs: L, op: O, rhs: RhsFor<ValueIn<L, N>, O, A>): QueryBuilder<T, A, N, S>;
+  having(condition: Predicate<A>): QueryBuilder<T, A, N, S>;
+  having(...args: [Operand, Op, unknown] | [Operand]) {
+    const node = assertInScope(this.query.scope, conditionOf(args));
+    return new QueryBuilder<T, A, N, S>({ ...this.query, having: [...this.query.having, node] });
   }
 
   orderBy(operands: (Operand<A> | [Operand<A>, Direction])[]) {
@@ -1016,15 +1110,15 @@ class QueryBuilder<T extends Table, A extends string = AliasOf<T>, N extends str
       ? [assertInScope(this.query.scope, item[0][NODE]), item[1]] as [Node, Direction]
       : [assertInScope(this.query.scope, item[NODE]), 'ASC'] as [Node, Direction]);
 
-    return new QueryBuilder<T, A, N, R>({ ...this.query, orderBy: [...this.query.orderBy, ...orderBy] });
+    return new QueryBuilder<T, A, N, S>({ ...this.query, orderBy: [...this.query.orderBy, ...orderBy] });
   }
 
   limit(n: number) {
-    return new QueryBuilder<T, A, N, R>({ ...this.query, limit: count(n, 'limit') });
+    return new QueryBuilder<T, A, N, S>({ ...this.query, limit: count(n, 'limit') });
   }
 
   offset(n: number) {
-    return new QueryBuilder<T, A, N, R>({ ...this.query, offset: count(n, 'offset') });
+    return new QueryBuilder<T, A, N, S>({ ...this.query, offset: count(n, 'offset') });
   }
 
   async all(db: IDatabase) {
@@ -1032,7 +1126,7 @@ class QueryBuilder<T extends Table, A extends string = AliasOf<T>, N extends str
     const rows = await run(db, this.renderSelect(new SqlBuilder(db.dialect), fields).build());
     const decoders = fields.map(([key, node]) => [key, decodeFor(db.dialect, node)] as const);
 
-    return rows.map(row => Object.fromEntries(decoders.map(([key, decode]) => [key, decode(row[key])]))) as R[];
+    return rows.map(row => Object.fromEntries(decoders.map(([key, decode]) => [key, decode(row[key])]))) as RowOf<T, N, S>[];
   }
 
   async one(db: IDatabase) {
@@ -1046,10 +1140,11 @@ class QueryBuilder<T extends Table, A extends string = AliasOf<T>, N extends str
   }
 
   // counts the rows `all` would return: as a subquery, limit and offset still
-  // apply, and postgres doesn't take ORDER BY next to a bare COUNT(*)
+  // apply, and postgres doesn't take ORDER BY next to a bare COUNT(*). Only
+  // distinct rows need their columns, to tell them apart
   async count(db: IDatabase) {
     const b = new SqlBuilder(db.dialect).push('SELECT COUNT(*) AS "count" FROM (');
-    const [row] = await run(db, this.renderSelect(b, []).push(') AS "q"').build());
+    const [row] = await run(db, this.renderSelect(b, this.query.distinct ? this.fields() : []).push(') AS "q"').build());
     return Number(row!['count']);
   }
 
@@ -1091,10 +1186,20 @@ class QueryBuilder<T extends Table, A extends string = AliasOf<T>, N extends str
     return select ?? columnsOf(table).map(col => [col.key, { kind: 'ref', alias: table[ALIAS], col, path: [] }]);
   }
 
-  private renderSelect(b: SqlBuilder, fields: Field[]) {
-    const { table, joins, where, groupBy, orderBy, limit, offset } = this.query;
+  private join(kind: Join, table: Table, on: Predicate): Query {
+    const alias = table[ALIAS];
+    if (this.query.scope.has(alias)) throw new Error(`"${alias}" is already part of the query, join it under another alias`);
 
-    b.push('SELECT ');
+    const scope = new Map(this.query.scope).set(alias, table);
+    const joins = [...this.query.joins, { kind, table, on: assertInScope(scope, on[NODE]) }];
+
+    return { ...this.query, scope, joins };
+  }
+
+  private renderSelect(b: SqlBuilder, fields: Field[]) {
+    const { table, joins, distinct, where, groupBy, having, orderBy, limit, offset } = this.query;
+
+    b.push(distinct ? 'SELECT DISTINCT ' : 'SELECT ');
 
     // an empty select list isn't valid SQL, but each matching row still needs
     // an (empty) object
@@ -1102,10 +1207,11 @@ class QueryBuilder<T extends Table, A extends string = AliasOf<T>, N extends str
     else b.join(fields, ', ', ([key, node]) => renderNode(b, node).push(' AS ', quote(key)));
 
     renderTable(b.push(' FROM '), table);
-    joins.forEach(join => renderNode(renderTable(b.push(' LEFT JOIN '), join.table).push(' ON '), join.on));
+    joins.forEach(join => renderNode(renderTable(b.push(' ', join.kind, ' JOIN '), join.table).push(' ON '), join.on));
     renderWhere(b, where);
 
     if (groupBy.length > 0) b.push(' GROUP BY ').join(groupBy, ', ', node => renderNode(b, node));
+    if (having.length > 0) b.push(' HAVING ').join(having, ' AND ', node => renderNode(b, node));
     if (orderBy.length > 0) b.push(' ORDER BY ').join(orderBy, ', ', ([node, dir]) => renderNode(b, node).push(' ', dir));
     // sqlite requires LIMIT whenever there's an OFFSET, and there's no "no
     // limit" value both sqlite and postgres accept other than a huge number
@@ -1123,9 +1229,9 @@ class QueryBuilder<T extends Table, A extends string = AliasOf<T>, N extends str
   // UPDATE/DELETE ... ORDER BY/LIMIT isn't portable, so refuse it rather than
   // silently affecting more rows than the query suggests
   private assertPlain(operation: string) {
-    const { joins, select, groupBy, orderBy, limit, offset } = this.query;
-    if (joins.length > 0 || select || groupBy.length > 0 || orderBy.length > 0 || limit !== undefined || offset !== undefined) {
-      throw new Error(`Cannot ${operation} with leftJoin, select, groupBy, orderBy, limit or offset`);
+    const { joins, select, distinct, groupBy, having, orderBy, limit, offset } = this.query;
+    if (joins.length > 0 || select || distinct || groupBy.length > 0 || having.length > 0 || orderBy.length > 0 || limit !== undefined || offset !== undefined) {
+      throw new Error(`Cannot ${operation} with joins, select, distinct, groupBy, having, orderBy, limit or offset`);
     }
   }
 }
@@ -1136,6 +1242,7 @@ const from = <T extends Table>(table: T) => new QueryBuilder<T>({
   joins: [],
   where: [],
   groupBy: [],
+  having: [],
   orderBy: [],
 });
 

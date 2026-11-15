@@ -70,7 +70,7 @@ const dialect: Dialect = {
   json,
   operators: {},
   jsonOf,
-  aggregate: (entries, filter) => {
+  collect: (entries, filter) => {
     const object = `jsonb_build_object(${entries.map(([key, sql]) => `${literal(key)}, ${sql}`).join(', ')})`;
     return `COALESCE(jsonb_agg(${object})${filter ? ` FILTER (WHERE ${filter})` : ''}, '[]'::JSONB)`;
   },

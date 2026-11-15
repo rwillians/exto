@@ -274,6 +274,9 @@ await from(tasks).select({ id: tasks.id, when: tasks.scheduledTo }).all(db);
 
 await from(tasks).select({ ...tasks, parent: tasks.parentId }).all(db);
 // → (Task & { parent: string | null })[]
+
+await from(tasks).select({ status: tasks.status }).distinct().all(db);
+// → { status: Task['status'] }[], each status once
 ```
 
 ### Comparing columns
@@ -281,6 +284,20 @@ await from(tasks).select({ ...tasks, parent: tasks.parentId }).all(db);
 ```ts
 await from(tasks).where(tasks.attempts, '<', tasks.maxAttempts).all(db);
 ```
+
+### Coalesce
+
+`expr.coalesce()` reads the first of its operands that isn't null. The rest
+can be columns or plain values of the first one's type:
+
+```ts
+await from(users).select({ seen: expr.coalesce(users.lastLoggedInAt, users.createdAt) }).all(db);
+// → { seen: Date }[]
+
+await from(users).where(expr.coalesce(users.lastLoggedInAt, new Date(0)), '<', lastWeek).all(db);
+```
+
+It reads null only when every one of its operands may.
 
 ### OR and grouping
 
@@ -349,6 +366,27 @@ await from(tasks)
 // → { status: Task['status'], tasks: number, attempts: number }[]
 ```
 
+| aggregate                           | reads                                                  |
+| :---------------------------------- | :----------------------------------------------------- |
+| `expr.count(x)`                     | how many rows have `x` not null                        |
+| `expr.count.distinct(x)`            | how many distinct values of `x` there are              |
+| `expr.sum(x)`                       | the sum of `x`, `0` for no rows (numeric columns)      |
+| `expr.sum.distinct(x)`              | the sum of the distinct values of `x`                  |
+| `expr.min(x)` `expr.max(x)`         | the lowest or highest value of `x`, `null` for no rows |
+| `expr.collect(table \| projection)` | the group's rows, as a list (see [Joins](#joins))      |
+
+`having` filters groups the way `where` filters rows:
+
+```ts
+await from(tasks)
+  .groupBy([tasks.payload.kind])
+  .having(expr.count(tasks.id), '>', 10)
+  .having(expr.max(tasks.scheduledTo), '<', lastWeek)
+  .select({ kind: tasks.payload.kind, latest: expr.max(tasks.scheduledTo) })
+  .all(db);
+// → { kind: string, latest: Date | null }[]
+```
+
 
 ## Joins
 
@@ -367,7 +405,7 @@ await from(parent)
 // → (Task & { children: number })[]
 ```
 
-`expr.aggregate()` collects a table's rows in each group into a list, or
+`expr.collect()` collects a table's rows in each group into a list, or
 just the columns you pick:
 
 ```ts
@@ -377,8 +415,8 @@ await from(parent)
   .groupBy([parent.id])
   .select({
     ...parent,
-    children: expr.aggregate(child),
-    summary: expr.aggregate({ id: child.id, kind: child.payload.kind }),
+    children: expr.collect(child),
+    summary: expr.collect({ id: child.id, kind: child.payload.kind }),
   })
   .all(db);
 // → (Task & { children: Task[], summary: { id: string, kind: string }[] })[]
@@ -386,9 +424,24 @@ await from(parent)
 
 A parent without children gets an empty list.
 
-Columns of a left-joined table are nullable: selecting `child.id` gives
-`string | null`. A query only takes columns of the tables it reads from, so
-referencing `child` before joining it is a type error.
+`innerJoin` only keeps rows with a match, `leftJoin` keeps every row of the
+tables joined so far, and `rightJoin` every row of the joined table:
+
+```ts
+await from(parent).innerJoin(child, expr(parent.id, '=', child.parentId)).select({ childId: child.id }).all(db);
+// → { childId: string }[]
+
+await from(parent).leftJoin(child, expr(parent.id, '=', child.parentId)).select({ childId: child.id }).all(db);
+// → { childId: string | null }[]
+
+await from(child).rightJoin(parent, expr(parent.id, '=', child.parentId)).select({ childId: child.id }).all(db);
+// → { childId: string | null }[]
+```
+
+Columns of a table whose rows may be missing are nullable: the left-joined
+table's, or those of the tables joined before a right join (the queried
+table's whole rows included). A query only takes columns of the tables it
+reads from, so referencing `child` before joining it is a type error.
 
 
 ## Update
@@ -411,8 +464,9 @@ await from(tasks).where(tasks.status, '=', 'done').delete(db);                  
 await from(tasks).where(tasks.status, '=', 'done').delete(db, { returning: true }); // → Task[]
 ```
 
-`update` and `delete` refuse joins, `groupBy`, `orderBy`, `limit` and
-`offset`, so they never touch more rows than the query suggests.
+`update` and `delete` refuse joins, `distinct`, `groupBy`, `having`,
+`orderBy`, `limit` and `offset`, so they never touch more rows than the query
+suggests.
 
 
 ## Transactions
