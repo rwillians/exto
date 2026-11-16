@@ -236,6 +236,14 @@ await queued.exists(db); // → boolean
 await queued.count(db);  // → number
 ```
 
+Where nulls go when ordering differs between databases: last when
+ascending on postgres, first on sqlite. Say where to put them, to read the
+same rows on both:
+
+```ts
+await from(users).orderBy([[users.lastLoggedInAt, 'DESC NULLS LAST']]).all(db);
+```
+
 | operator                                      | value                                                   |
 | :-------------------------------------------- | :------------------------------------------------------ |
 | `'='` `'!='` `'<'` `'<='` `'>'` `'>='`        | the column's type, or another column                    |

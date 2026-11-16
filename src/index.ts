@@ -1080,7 +1080,10 @@ const into = <T extends Table>(table: T) => new InsertBuilder(table);
 
 // ─── query ───────────────────────────────────────────────────────────────────
 
-type Direction = 'ASC' | 'DESC';
+// where nulls go is up to the database unless said: last ascending on
+// postgres, first on sqlite
+const DIRECTIONS = ['ASC', 'DESC', 'ASC NULLS FIRST', 'ASC NULLS LAST', 'DESC NULLS FIRST', 'DESC NULLS LAST'] as const;
+type Direction = typeof DIRECTIONS[number];
 
 // a field is an operand read under a key of its own
 type Field = [key: string, node: Node];
@@ -1209,9 +1212,11 @@ class QueryBuilder<T extends Table, A extends string = AliasOf<T>, N extends str
   }
 
   orderBy(operands: (Operand<A> | [Operand<A>, Direction])[]) {
-    const orderBy = operands.map(item => Array.isArray(item)
-      ? [assertInScope(this.query.scope, item[0][NODE]), item[1]] as [Node, Direction]
-      : [assertInScope(this.query.scope, item[NODE]), 'ASC'] as [Node, Direction]);
+    const orderBy = operands.map(item => {
+      const [operand, direction] = Array.isArray(item) ? item : [item, 'ASC' as const];
+      if (!DIRECTIONS.includes(direction)) raise(`Unknown direction "${direction}", expected one of ${DIRECTIONS.join(', ')}`);
+      return [assertInScope(this.query.scope, operand[NODE]), direction] as [Node, Direction];
+    });
 
     return new QueryBuilder<T, A, N, S>({ ...this.query, orderBy: [...this.query.orderBy, ...orderBy] });
   }
