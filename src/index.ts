@@ -237,6 +237,7 @@ type Value = { kind: 'value'; value: unknown };
 type Node =
   | { kind: 'ref'; alias: string; col: Column; path: Column[] }
   | { kind: 'fragment'; strings: readonly string[]; values: unknown[] }
+  | { kind: 'typed'; node: Node; col: Column }
   | { kind: 'call'; fn: Fn; arg: Node; distinct?: true }
   | { kind: 'coalesce'; nodes: [Node, ...(Node | Value)[]] }
   | { kind: 'compare'; lhs: Node; op: Op; rhs: Node | Value }
@@ -593,6 +594,9 @@ const renderNode = (b: SqlBuilder, node: Node): SqlBuilder => {
     case 'not':
       return renderNode(b.push('NOT ('), node.node).push(')');
 
+    case 'typed':
+      return renderNode(b, node.node);
+
     case 'group': {
       const { op, nodes } = node;
       if (nodes.length === 0) return b.push(op === 'AND' ? '1 = 1' : '1 = 0');
@@ -623,14 +627,17 @@ const refSql = (node: Node & { kind: 'ref' }) => `${quote(node.alias)}.${quote(n
 // an operand as a value inside a JSON document: columns as `fromJson` reads
 // them, anything else as it is
 const renderJson = (b: SqlBuilder, node: Node) => {
+  if (node.kind === 'typed') return b.push(b.dialect.jsonOf(b.capture(() => renderNode(b, node.node)), node.col.type));
   if (node.kind !== 'ref') return renderNode(b, node);
   if (node.path.length === 0) return b.push(b.dialect.jsonOf(refSql(node), node.col.type));
   return b.push(b.dialect.jsonOf(b.dialect.json(refSql(node), node.path.map(field => field.name), 'JSON'), 'JSON'));
 };
 
-const fromJsonFor = (node: Node, value: unknown) => node.kind === 'ref'
-  ? fromJson(node.path.at(-1) ?? node.col, value)
-  : value;
+const fromJsonFor = (node: Node, value: unknown) => {
+  if (node.kind === 'typed') return fromJson(node.col, value);
+  if (node.kind === 'ref') return fromJson(node.path.at(-1) ?? node.col, value);
+  return value;
+};
 
 // the node whose values another one reads like: the lowest and highest values
 // read like those they're picked from, and a coalesce like its first operand
@@ -643,6 +650,7 @@ const valuesOf = (node: Node): Node => {
 // values compared with a column are encoded the way the column stores them
 const encodeFor = (dialect: Dialect, operand: Node, value: unknown) => {
   const node = valuesOf(operand);
+  if (node.kind === 'typed') return encode(dialect, node.col, value);
   if (node.kind !== 'ref') return value;
   if (node.path.length === 0) return encode(dialect, node.col, value);
 
@@ -652,6 +660,7 @@ const encodeFor = (dialect: Dialect, operand: Node, value: unknown) => {
 
 const decodeFor = (dialect: Dialect, operand: Node) => (value: unknown) => {
   const node = valuesOf(operand);
+  if (node.kind === 'typed') return decode(dialect, node.col, value);
   if (node.kind === 'call') return Number(value ?? 0);
   if (node.kind === 'collect') return (dialect.codecs.JSON.decode(value) as Row[])
     .map(row => Object.fromEntries(node.fields.map(([key, field]) => [key, fromJsonFor(field, row[key])])));
@@ -701,7 +710,10 @@ type Condition<A extends string = string> = Operand<A, boolean, never>;
 
 // type only: a fragment's SQL could be anything, so it goes wherever a
 // value or a condition does
-type Fragment<A extends string = string> = Operand<A, unknown, never> & { readonly [FRAGMENT]: true };
+type Fragment<A extends string = string> = Operand<A, unknown, never> & {
+  readonly [FRAGMENT]: true;
+  as<P extends ColumnProps>(type: ColumnBuilder<P>): Operand<A, std.output<P['schema']>, never>;
+};
 
 type Predicate<A extends string = string> = Condition<A> | Fragment<A>;
 
@@ -854,9 +866,18 @@ const expr = Object.assign(exprOf, {
 
 // a fragment of raw SQL: interpolated operands are rendered in place, and
 // any other value is passed as a parameter. It reads as a value, or as a
-// condition of its own
-const f = <V extends unknown[]>(strings: TemplateStringsArray, ...values: V) =>
-  operand({ kind: 'fragment', strings: [...strings], values }) as unknown as Fragment<AliasesOf<V[number]>>;
+// condition of its own. `as` reads it as a column type's values, e.g.
+// `t.integer()`: typed, decoded and compared like that column's, while its
+// SQL stays as written
+const f = <V extends unknown[]>(strings: TemplateStringsArray, ...values: V) => {
+  const node: Node = { kind: 'fragment', strings: [...strings], values };
+
+  return Object.defineProperty(operand(node), 'as', {
+    value: (type: unknown) => type instanceof ColumnBuilder
+      ? operand({ kind: 'typed', node, col: type.props as Column })
+      : raise(`A fragment is read as a column type, e.g. t.integer(), got ${String(type)}`),
+  }) as unknown as Fragment<AliasesOf<V[number]>>;
+};
 
 // every table an operand reads from must be part of the query, under the
 // alias it's referenced by
@@ -877,6 +898,9 @@ const assertInScope = (scope: Scope, node: Node): Node => {
       assertInScope(scope, node.lhs);
       break;
     case 'not':
+      assertInScope(scope, node.node);
+      break;
+    case 'typed':
       assertInScope(scope, node.node);
       break;
     case 'group':

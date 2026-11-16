@@ -374,6 +374,23 @@ await from(tasks)
 Interpolated columns are rendered in place, and any other value is passed as
 a parameter.
 
+A fragment reads as `unknown`, unless `.as()` gives it a column type. It's
+then typed, decoded and compared like a column of that type, while its SQL
+stays as written:
+
+```ts
+await from(tasks)
+  .select({
+    doubled: f`${tasks.attempts} * 2`.as(t.integer()),
+    retried: f`${tasks.attempts} > ${0}`.as(t.boolean()),
+    retries: f`nullif(${tasks.attempts}, ${0})`.as(t.integer().optional()),
+  })
+  .all(db);
+// → { doubled: number, retried: boolean, retries: number | null }[]
+
+await from(tasks).where(f`${tasks.scheduledTo}`.as(t.timestamp()), '<', new Date()).all(db);
+```
+
 
 ## Group by
 
