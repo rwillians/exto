@@ -182,6 +182,27 @@ await migrate(db);
 Migrations run in key order, each in its own transaction, and only once:
 applied ones are tracked in the `schema_migrations` table.
 
+`create` only creates tables and indexes from their current definition, so
+schema changes (altering or dropping tables, columns and indexes) go in SQL
+files, written for your database. `file` runs every statement of one, one at
+a time, and a failing statement rolls back the whole migration. `exec` runs a
+single statement, and throws when given more:
+
+```ts
+import { defineMigrations, exec, file } from '@rwillians/exto';
+
+const migrate = defineMigrations({
+  '0003': async (db) => {
+    await file(db, 'migrations/20261116145400.sql');
+    await exec(db, 'UPDATE "users" SET "logins" = 0 WHERE "logins" IS NULL');
+  },
+});
+```
+
+A relative path is resolved from the working directory. To resolve it from
+the migration's own module instead, pass a URL:
+`new URL('./20261116145400.sql', import.meta.url)`.
+
 
 ## Insert
 

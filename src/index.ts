@@ -551,9 +551,50 @@ const run = async (db: IDatabase, { sql, params }: Statement) => {
   }
 };
 
-// runs a raw statement, e.g. a data fix in a migration
+// a quoted string or identifier, a dollar-quoted body, a comment, a
+// semicolon, or anything else
+const TOKENS = /'(?:[^']|''){0,}'|"(?:[^"]|""){0,}"|(\$(?:[A-Za-z_]\w{0,})?\$)[\s\S]{0,}?\1|--[^\n]{0,}|\/\*[\s\S]{0,}?\*\/|;|[^'"$;\-/]+|[\s\S]/g;
+
+const isCode = (token: string) => !token.startsWith('--') && !token.startsWith('/*') && token.trim() !== '';
+
+// splits SQL into its statements, by the semicolons outside of quotes and
+// comments, leaving out those with nothing but comments
+const statementsOf = (sql: string) => {
+  const statements: string[] = [];
+  let current = '';
+  let code = false;
+
+  for (const [token] of sql.matchAll(TOKENS)) {
+    if (token === ';') {
+      if (code) statements.push(current.trim());
+      current = '';
+      code = false;
+    } else {
+      current += token;
+      code ||= isCode(token);
+    }
+  }
+
+  if (code) statements.push(current.trim());
+  return statements;
+};
+
+// runs a raw statement, e.g. a data fix in a migration. Only one: a
+// prepared statement on sqlite would run the first and silently skip the
+// rest
 const exec = async (db: IDatabase, sql: string, params: unknown[] = []) => {
+  const { length } = statementsOf(sql);
+  if (length > 1) throw new Error(`"exec" runs a single statement, got ${length}: run a script with "file"`);
+
   await run(db, { sql, params });
+};
+
+// runs every statement of a SQL file, one at a time, e.g. a migration's
+// schema changes. A relative path is resolved from the working directory,
+// and a URL, e.g. `new URL('./0001.sql', import.meta.url)`, from wherever it
+// points
+const file = async (db: IDatabase, path: string | URL) => {
+  for (const sql of statementsOf(await Bun.file(path).text())) await run(db, { sql, params: [] });
 };
 
 const renderTable = (b: SqlBuilder, table: Table) => table[ALIAS] === table[NAME]
@@ -1491,6 +1532,7 @@ export {
   exec,
   expr,
   f,
+  file,
   from,
   into,
   parse,

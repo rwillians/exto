@@ -1,0 +1,2 @@
+CREATE TABLE "things" ("id" INTEGER PRIMARY KEY);
+INSERT INTO "nope" ("id") VALUES (1);
