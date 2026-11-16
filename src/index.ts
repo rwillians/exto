@@ -823,9 +823,18 @@ const match: Match = (lhs: Operand, regex: RegExp) => {
 
 const isTable = (value: unknown): value is Table => typeof value === 'object' && value !== null && NAME in value;
 
+type Ref = Node & { kind: 'ref' };
+
+const refsOf = (table: Table) => columnsOf(table).map((col): Ref => ({ kind: 'ref', alias: table[ALIAS], col, path: [] }));
+
+// a column that's never null tells apart a row an outer join found no match
+// for: the table's primary key, or any required one
+const requiredOf = (nodes: Node[]) => nodes
+  .filter((node): node is Ref => node.kind === 'ref' && node.path.length === 0 && !node.col.nullable)
+  .sort((a, b) => Number(b.col.primaryKey ?? false) - Number(a.col.primaryKey ?? false))[0];
+
 // the rows of a table (or of a projection) in a group, as a list. Rows a
-// left join found no match for are left out, telling them apart by a
-// column that's never null: the table's primary key, or any required one
+// left join found no match for are left out (see `requiredOf`)
 type Collect = {
   <T extends Table>(table: T): Operand<AliasOf<T>, InferForSelect<ColumnsOf<T>>[], never>;
   <P extends Record<string, Operand>>(projection: P): Operand<AliasesOf<P[keyof P]>, Projected<P, never>[], never>;
@@ -836,14 +845,7 @@ const collect: Collect = (source: Table | Record<string, Operand>) => {
     ? [key, value[NODE]]
     : raise(`"${key}" must be a column reference or an expression`));
 
-  const refs = isTable(source)
-    ? columnsOf(source).map((col): Node => ({ kind: 'ref', alias: source[ALIAS], col, path: [] }))
-    : fields.map(([, node]) => node);
-
-  const required = refs
-    .filter((node): node is Node & { kind: 'ref' } => node.kind === 'ref' && node.path.length === 0 && !node.col.nullable)
-    .sort((a, b) => Number(b.col.primaryKey ?? false) - Number(a.col.primaryKey ?? false))[0];
-
+  const required = requiredOf(isTable(source) ? refsOf(source) : fields.map(([, node]) => node));
   const filter = required && compare(operand(required), 'IS NOT', null);
   return operand({ kind: 'collect', fields, filter }) as never;
 };
@@ -1083,13 +1085,32 @@ type Direction = 'ASC' | 'DESC';
 // a field is an operand read under a key of its own
 type Field = [key: string, node: Node];
 
+// a table selected under a key of its own: its columns are read as
+// `key.column` fields, and put back together into an object, or null when
+// the table's row is missing (see `requiredOf`, or every column is null when
+// none is required)
+type Nested = { key: string; fields: Field[]; required?: string };
+
+type Selected = Field | Nested;
+
+const flatten = (selected: Selected[]) => selected.flatMap(item => Array.isArray(item)
+  ? [item]
+  : item.fields.map(([key, node]): Field => [`${item.key}.${key}`, node]));
+
+const nest = ({ key, fields, required }: Nested, row: Row) => {
+  const value = Object.fromEntries(fields.map(([col]) => [col, row[`${key}.${col}`]]));
+  const missing = required === undefined ? Object.values(value).every(item => item === null) : value[required] === null;
+
+  return missing ? null : value;
+};
+
 type Join = 'INNER' | 'LEFT' | 'RIGHT';
 
 type Query = {
   table: Table;
   scope: Scope;
   joins: { kind: Join; table: Table; on: Node }[];
-  select?: Field[];
+  select?: Selected[];
   distinct?: true;
   where: Node[];
   groupBy: Node[];
@@ -1099,18 +1120,24 @@ type Query = {
   offset?: number;
 };
 
+// a table selected under a key of its own reads as a whole row, or null
+// when the row may be missing
+type RowIn<T extends Table, N extends string> = [AliasOf<T> & N] extends [never]
+  ? InferForSelect<ColumnsOf<T>>
+  : InferForSelect<ColumnsOf<T>> | null;
+
 // the row a projection reads, under the projection's own keys
 type Projected<P, N extends string> = Expand<{
-  [K in keyof P & string]: ValueIn<P[K], N>;
+  [K in keyof P & string]: P[K] extends Table ? RowIn<P[K], N> : ValueIn<P[K], N>;
 }>;
 
 // the row a query reads: a whole row of `T` (every column null when `T`'s
 // row may be missing, in a right join) unless `select` picked a projection
-type RowOf<T extends Table, N extends string, S> = [S] extends [Record<string, Operand>]
-  ? Projected<S, N>
-  : [AliasOf<T> & N] extends [never]
-  ? InferForSelect<ColumnsOf<T>>
-  : Expand<{ [K in keyof ColumnsOf<T>]: ColumnsOf<T>[K]['output'] | null }>;
+type RowOf<T extends Table, N extends string, S> = [S] extends [undefined]
+  ? [AliasOf<T> & N] extends [never]
+    ? InferForSelect<ColumnsOf<T>>
+    : Expand<{ [K in keyof ColumnsOf<T>]: ColumnsOf<T>[K]['output'] | null }>
+  : Projected<S, N>;
 
 const conditionOf = (args: [Operand, Op, unknown] | [Operand]) => args.length === 1 ? args[0][NODE] : compare(...args);
 
@@ -1124,12 +1151,20 @@ const count = (value: number, name: string) => Number.isSafeInteger(value) && va
 class QueryBuilder<T extends Table, A extends string = AliasOf<T>, N extends string = never, S = undefined> {
   constructor(private readonly query: Query) { }
 
-  select<P extends Record<string, Operand<A>>>(projection: P) {
-    const fields = Object.entries(projection).map(([key, value]): Field => isOperand(value)
-      ? [key, assertInScope(this.query.scope, value[NODE])]
-      : raise(`"${key}" must be a column reference or an expression`));
+  select<P extends Record<string, Operand<A> | Table<string, A>>>(projection: P) {
+    const selected = Object.entries(projection).map(([key, value]): Selected => {
+      if (isOperand(value)) return [key, assertInScope(this.query.scope, value[NODE])];
+      if (!isTable(value)) raise(`"${key}" must be a column reference, an expression or a table`);
 
-    return new QueryBuilder<T, A, N, P>({ ...this.query, select: fields });
+      const refs = refsOf(value).map(ref => assertInScope(this.query.scope, ref) as Ref);
+      return { key, fields: refs.map(ref => [ref.col.key, ref]), required: requiredOf(refs)?.col.key };
+    });
+
+    const keys = flatten(selected).map(([key]) => key);
+    const twice = keys.find((key, i) => keys.indexOf(key) !== i);
+    if (twice) throw new Error(`"${twice}" is selected twice, as a key and as a column of a selected table`);
+
+    return new QueryBuilder<T, A, N, P>({ ...this.query, select: selected });
   }
 
   // leaves out duplicate rows
@@ -1190,11 +1225,15 @@ class QueryBuilder<T extends Table, A extends string = AliasOf<T>, N extends str
   }
 
   async all(db: IDatabase) {
-    const fields = this.fields();
+    const selected = this.selected();
+    const fields = flatten(selected);
     const rows = await run(db, this.renderSelect(new SqlBuilder(db.dialect), fields).build());
     const decoders = fields.map(([key, node]) => [key, decodeFor(db.dialect, node)] as const);
 
-    return rows.map(row => Object.fromEntries(decoders.map(([key, decode]) => [key, decode(row[key])]))) as RowOf<T, N, S>[];
+    return rows.map(row => {
+      const flat = Object.fromEntries(decoders.map(([key, decode]) => [key, decode(row[key])]));
+      return Object.fromEntries(selected.map(item => Array.isArray(item) ? [item[0], flat[item[0]]] : [item.key, nest(item, flat)]));
+    }) as RowOf<T, N, S>[];
   }
 
   async one(db: IDatabase) {
@@ -1212,7 +1251,7 @@ class QueryBuilder<T extends Table, A extends string = AliasOf<T>, N extends str
   // distinct rows need their columns, to tell them apart
   async count(db: IDatabase) {
     const b = new SqlBuilder(db.dialect).push('SELECT COUNT(*) AS "count" FROM (');
-    const [row] = await run(db, this.renderSelect(b, this.query.distinct ? this.fields() : []).push(') AS "q"').build());
+    const [row] = await run(db, this.renderSelect(b, this.query.distinct ? flatten(this.selected()) : []).push(') AS "q"').build());
     return Number(row!['count']);
   }
 
@@ -1249,9 +1288,8 @@ class QueryBuilder<T extends Table, A extends string = AliasOf<T>, N extends str
   }
 
   // every column of the queried table, unless `select` says otherwise
-  private fields(): Field[] {
-    const { table, select } = this.query;
-    return select ?? columnsOf(table).map(col => [col.key, { kind: 'ref', alias: table[ALIAS], col, path: [] }]);
+  private selected(): Selected[] {
+    return this.query.select ?? refsOf(this.query.table).map(ref => [ref.col.key, ref]);
   }
 
   private join(kind: Join, table: Table, on: Predicate): Query {

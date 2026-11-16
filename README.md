@@ -465,6 +465,21 @@ await from(parent)
 
 A parent without children gets an empty list.
 
+A joined table can also be selected as a whole, under a key of its own. It
+reads as a row, or as null where the join found no match:
+
+```ts
+await from(child)
+  .leftJoin(parent, expr(parent.id, '=', child.parentId))
+  .select({ ...child, parent })
+  .all(db);
+// → (Task & { parent: Task | null })[]
+```
+
+A missing row is told apart by its primary key (or any required column)
+being null. For a table without one, the row reads null when every one of its
+columns is.
+
 `innerJoin` only keeps rows with a match, `leftJoin` keeps every row of the
 tables joined so far, and `rightJoin` every row of the joined table:
 

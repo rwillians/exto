@@ -1,5 +1,5 @@
 import { beforeEach, expect, test } from 'bun:test';
-import { expr, from, into } from '../src';
+import { create, expr, from, into, t, table } from '../src';
 import { type Task, task, tasks } from './fixtures';
 import { type Database, type Equals, type Expand, assert, suite } from './helpers';
 
@@ -198,6 +198,83 @@ suite('right join', (fresh) => {
   });
 });
 
+suite('selected tables', (fresh) => {
+  let db: Database;
+  let a: Task;
+  let b: Task;
+  let children: Task[];
+
+  beforeEach(async () => {
+    ({ db } = await fresh());
+    ({ a, b, children } = await seed(db));
+  });
+
+  const byId = <T extends { id: string }>(rows: T[]) => rows.toSorted((x, y) => x.id.localeCompare(y.id));
+
+  test('read as an object, or null when a left join found no match', async () => {
+    const rows = await from(child)
+      .leftJoin(parent, expr(parent.id, '=', child.parentId))
+      .select({ ...child, parent })
+      .all(db);
+
+    expect(byId(rows)).toEqual(byId([
+      { ...a, parent: null },
+      { ...b, parent: null },
+      ...children.map(row => ({ ...row, parent: a })),
+    ]));
+  });
+
+  test('read as an object after an inner join', async () => {
+    const rows = await from(child)
+      .innerJoin(parent, expr(parent.id, '=', child.parentId))
+      .select({ id: child.id, parent })
+      .all(db);
+
+    expect(byId(rows)).toEqual(byId(children.map(row => ({ id: row.id, parent: a }))));
+  });
+
+  test('read null when a right join found no match', async () => {
+    const rows = await from(child)
+      .rightJoin(parent, expr(parent.id, '=', child.parentId))
+      .where(parent.id, '=', b.id)
+      .select({ child, parent })
+      .all(db);
+
+    expect(rows).toEqual([{ child: null, parent: b }]);
+  });
+
+  test('tell missing rows apart by every column when none is required', async () => {
+    const notes = table('things', { body: t.text().optional(), kind: t.text().optional() });
+    await create.table(notes).onto(db);
+    await into(notes).values([{ body: 'a' }]).insert(db);
+
+    const rows = await from(tasks)
+      .leftJoin(notes, expr(notes.body, '=', tasks.payload.kind))
+      .where(tasks.parentId, 'IS', null)
+      .orderBy([tasks.payload.kind])
+      .select({ kind: tasks.payload.kind, note: notes })
+      .all(db);
+
+    expect(rows).toEqual([{ kind: 'a', note: { body: 'a', kind: null } }, { kind: 'b', note: null }]);
+  });
+
+  test('are counted as distinct rows', async () => {
+    const query = from(child).innerJoin(parent, expr(parent.id, '=', child.parentId)).select({ parent }).distinct();
+
+    expect(await query.all(db)).toEqual([{ parent: a }]);
+    expect(await query.count(db)).toBe(1);
+  });
+
+  test("can't share a key with another field", () => {
+    expect(() => from(child).innerJoin(parent, expr(parent.id, '=', child.parentId)).select({ 'parent.id': child.id, parent }))
+      .toThrow('"parent.id" is selected twice');
+  });
+
+  test('must be part of the query', () => {
+    expect(() => from(child).select({ parent } as never)).toThrow('"parent.id" isn\'t part of the query');
+  });
+});
+
 // ─── type-level ──────────────────────────────────────────────────────────────
 
 export const typeChecks = async (db: Database) => {
@@ -232,6 +309,22 @@ export const typeChecks = async (db: Database) => {
   // a projection reads as nullable when its table is right-joined after `select`
   const late = await from(child).select({ id: child.id }).rightJoin(parent, expr(parent.id, '=', child.parentId)).all(db);
   assert<Equals<typeof late, { id: string | null }[]>>();
+
+  // a selected table reads as a row, or null when its row may be missing
+  const belongsTo: (Task & { parent: Task | null })[] = await from(child)
+    .leftJoin(parent, expr(parent.id, '=', child.parentId))
+    .select({ ...child, parent })
+    .all(db);
+  assert<Equals<Expand<(typeof belongsTo)[number]>, Expand<Task & { parent: Task | null }>>>();
+
+  const selectedInner = await from(child).innerJoin(parent, expr(parent.id, '=', child.parentId)).select({ parent }).all(db);
+  assert<Equals<typeof selectedInner, { parent: Task }[]>>();
+
+  const selectedRight = await from(child).rightJoin(parent, expr(parent.id, '=', child.parentId)).select({ child, parent }).all(db);
+  assert<Equals<typeof selectedRight, { child: Task | null; parent: Task }[]>>();
+
+  // @ts-expect-error a table can't be selected until it's joined
+  from(child).select({ parent });
 
   // @ts-expect-error join conditions take references to the joined tables only
   from(parent).innerJoin(child, expr(parent.id, '=', tasks.parentId));
