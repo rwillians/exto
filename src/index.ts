@@ -1131,8 +1131,8 @@ type Projected<P, N extends string> = Expand<{
   [K in keyof P & string]: P[K] extends Table ? RowIn<P[K], N> : ValueIn<P[K], N>;
 }>;
 
-// the row a query reads: a whole row of `T` (every column null when `T`'s
-// row may be missing, in a right join) unless `select` picked a projection
+// the row a query reads: `T`'s own (its columns null when its row may be
+// missing, after a right join) unless `select` picked a projection
 type RowOf<T extends Table, N extends string, S> = [S] extends [undefined]
   ? [AliasOf<T> & N] extends [never]
     ? InferForSelect<ColumnsOf<T>>
@@ -1179,18 +1179,18 @@ class QueryBuilder<T extends Table, A extends string = AliasOf<T>, N extends str
     return new QueryBuilder<T, A, N, S>({ ...this.query, where: [...this.query.where, node] });
   }
 
-  // only rows with a match in the joined table
+  // only rows with a match in the joined table, whose row is never missing
   innerJoin<J extends Table>(table: J, on: Predicate<A | AliasOf<J>>) {
     return new QueryBuilder<T, A | AliasOf<J>, N, S>(this.join('INNER', table, on));
   }
 
-  // the joined table's columns read as null for rows it has no match for
+  // the joined table's row may be missing, where it has no match
   leftJoin<J extends Table>(table: J, on: Predicate<A | AliasOf<J>>) {
     return new QueryBuilder<T, A | AliasOf<J>, N | AliasOf<J>, S>(this.join('LEFT', table, on));
   }
 
-  // every row of the joined table, and the columns of the tables joined so
-  // far read as null for rows they have no match for
+  // every row of the joined table, while the rows of the tables joined so far
+  // may be missing, where they have no match
   rightJoin<J extends Table>(table: J, on: Predicate<A | AliasOf<J>>) {
     return new QueryBuilder<T, A | AliasOf<J>, A, S>(this.join('RIGHT', table, on));
   }

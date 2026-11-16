@@ -465,21 +465,6 @@ await from(parent)
 
 A parent without children gets an empty list.
 
-A joined table can also be selected as a whole, under a key of its own. It
-reads as a row, or as null where the join found no match:
-
-```ts
-await from(child)
-  .leftJoin(parent, expr(parent.id, '=', child.parentId))
-  .select({ ...child, parent })
-  .all(db);
-// → (Task & { parent: Task | null })[]
-```
-
-A missing row is told apart by its primary key (or any required column)
-being null. For a table without one, the row reads null when every one of its
-columns is.
-
 `innerJoin` only keeps rows with a match, `leftJoin` keeps every row of the
 tables joined so far, and `rightJoin` every row of the joined table:
 
@@ -494,10 +479,26 @@ await from(child).rightJoin(parent, expr(parent.id, '=', child.parentId)).select
 // → { childId: string | null }[]
 ```
 
-Columns of a table whose rows may be missing are nullable: the left-joined
-table's, or those of the tables joined before a right join (the queried
-table's whole rows included). A query only takes columns of the tables it
-reads from, so referencing `child` before joining it is a type error.
+A join may leave a table's row missing: the left-joined table's where it has
+no match, and the rows of the tables joined before a right join (the queried
+table's included) where they have none. An inner join never does. Where a row
+may be missing, its columns are nullable, and so is the row itself when it's
+selected as a whole, under a key of its own:
+
+```ts
+await from(child)
+  .leftJoin(parent, expr(parent.id, '=', child.parentId))
+  .select({ ...child, parent })
+  .all(db);
+// → (Task & { parent: Task | null })[]
+```
+
+A missing row is told apart by its primary key (or any required column)
+being null. For a table without one, the row reads null when every one of its
+columns is.
+
+A query only takes the tables it reads from, so referencing `child` before
+joining it is a type error.
 
 
 ## Update
