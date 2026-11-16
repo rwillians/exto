@@ -242,6 +242,7 @@ type Node =
   | { kind: 'compare'; lhs: Node; op: Op; rhs: Node | Value }
   | { kind: 'match'; lhs: Node; regex: RegExp }
   | { kind: 'group'; op: 'AND' | 'OR'; nodes: Node[] }
+  | { kind: 'not'; node: Node }
   | { kind: 'collect'; fields: Field[]; filter?: Node };
 
 // anything that renders to SQL. Type only: `aliases` are the tables it reads
@@ -589,6 +590,9 @@ const renderNode = (b: SqlBuilder, node: Node): SqlBuilder => {
       return b.push(b.dialect.match(sql, pattern, node.regex));
     }
 
+    case 'not':
+      return renderNode(b.push('NOT ('), node.node).push(')');
+
     case 'group': {
       const { op, nodes } = node;
       if (nodes.length === 0) return b.push(op === 'AND' ? '1 = 1' : '1 = 0');
@@ -759,6 +763,11 @@ const exprOf: ExprOf = (lhs: Operand, op: Op, rhs: unknown) => operand(compare(l
 const group = (op: 'AND' | 'OR') => <E extends Predicate>(exprs: E[]) =>
   operand({ kind: 'group', op, nodes: exprs.map(expr => expr[NODE]) }) as unknown as Condition<AliasesOf<E>>;
 
+// true where the condition is false. Like SQL, it's still null where the
+// condition is null
+const not = <E extends Predicate>(expr: E) =>
+  operand({ kind: 'not', node: expr[NODE] }) as unknown as Condition<AliasesOf<E>>;
+
 const call = (fn: Fn, distinct?: true) => (arg: Operand) => operand({ kind: 'call', fn, arg: arg[NODE], ...(distinct && { distinct }) });
 
 type Counted = <O extends Operand>(arg: O) => Operand<AliasesOf<O>, number, never>;
@@ -833,6 +842,7 @@ const collect: Collect = (source: Table | Record<string, Operand>) => {
 const expr = Object.assign(exprOf, {
   and: group('AND'),
   or: group('OR'),
+  not,
   coalesce,
   match,
   count: Object.assign(call('COUNT') as Counted, { distinct: call('COUNT', true) as Counted }),
@@ -865,6 +875,9 @@ const assertInScope = (scope: Scope, node: Node): Node => {
       break;
     case 'match':
       assertInScope(scope, node.lhs);
+      break;
+    case 'not':
+      assertInScope(scope, node.node);
       break;
     case 'group':
       node.nodes.forEach(node => assertInScope(scope, node));

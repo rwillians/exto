@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
-import { expr, from, into } from '../src';
+import { expr, f, from, into } from '../src';
 import { type Task, minutesAgo, minutesFromNow, task, tasks, users } from './fixtures';
 import { type Database, assert, type Equals, suite } from './helpers';
 
@@ -145,6 +145,25 @@ suite('where', (fresh) => {
     expect(await ids(query.all(db))).toEqual(idsOf(1));
   });
 
+  test('expr.not negates a condition', async () => {
+    const query = from(tasks)
+      .where(expr.not(expr.or([expr(tasks.status, '=', 'scheduled'), expr(tasks.status, '=', 'queued')])));
+
+    expect(await ids(query.all(db))).toEqual(idsOf(3));
+  });
+
+  test('expr.not binds to the condition it negates', async () => {
+    const query = from(tasks)
+      .where(expr.not(expr(tasks.status, '=', 'scheduled')))
+      .where(expr.not(f`${tasks.attempts} > ${1}`));
+
+    expect(await ids(query.all(db))).toEqual(idsOf(2));
+  });
+
+  test('expr.not twice is the condition itself', async () => {
+    expect(await ids(from(tasks).where(expr.not(expr.not(expr(tasks.attempts, '=', 3)))).all(db))).toEqual(idsOf(1, 3));
+  });
+
   test('compares a column with another', async () => {
     expect(await ids(from(tasks).where(tasks.attempts, '=', tasks.maxAttempts).all(db))).toEqual(idsOf(1, 3));
     expect(await ids(from(tasks).where(tasks.attempts, '<', tasks.maxAttempts).all(db))).toEqual(idsOf(0, 2));
@@ -161,6 +180,14 @@ export const typeChecks = async (db: Database) => {
     expr.and([expr(tasks.status, '=', 'scheduled'), expr(tasks.scheduledTo, '<', new Date())]),
     expr(tasks.parentId, 'IS', null),
   ]));
+
+  from(tasks).where(expr.not(expr.and([expr(tasks.status, '=', 'scheduled'), f`${tasks.attempts} > ${1}`])));
+
+  // @ts-expect-error only conditions can be negated
+  expr.not(tasks.status);
+
+  // @ts-expect-error negated references must be to the query's table too
+  from(tasks).where(expr.not(expr(users.name, '=', 'Jane')));
 
   // @ts-expect-error enum values are checked
   from(tasks).where(tasks.status, '=', 'nope');

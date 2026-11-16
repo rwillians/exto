@@ -318,7 +318,7 @@ await from(users).where(expr.coalesce(users.lastLoggedInAt, new Date(0)), '<', l
 
 It reads null only when every one of its operands may.
 
-### OR and grouping
+### AND, OR and NOT
 
 ```ts
 await from(tasks)
@@ -330,7 +330,12 @@ await from(tasks)
     ]),
   ]))
   .all(db);
+
+await from(tasks).where(expr.not(expr.match(tasks.payload.kind, /^N/))).all(db);
 ```
+
+`expr.not()` negates any condition, fragments included. As in SQL, it reads
+null (and so filters the row out) where the condition does.
 
 ### Embedded fields
 

@@ -31,6 +31,11 @@ suite('match', (fresh, adapter) => {
     expect(await from(tasks).where(expr.match(tasks.payload.kind, /^N/g)).count(db)).toBe(1);
   });
 
+  test('is negated by expr.not', async () => {
+    expect(await from(tasks).where(expr.not(expr.match(tasks.payload.kind, /^N/))).count(db)).toBe(1);
+    expect(await from(tasks).where(expr.not(expr.match(tasks.payload.kind, /^n/i))).count(db)).toBe(1);
+  });
+
   test('matches a fragment too', async () => {
     expect(await from(tasks).where(expr.match(f`lower(${tasks.payload.kind})`, /^n/)).all(db)).toEqual([notify]);
   });
