@@ -33,6 +33,32 @@ const jane = await from(users)
 - No singletons: you always pass the database explicitly.
 
 
+## Contents
+
+- [Install](#install)
+- [Connecting](#connecting)
+- [Tables](#tables)
+  - [Custom types](#custom-types)
+- [Migrations](#migrations)
+- [Insert](#insert)
+  - [On conflict](#on-conflict)
+- [Select](#select)
+  - [Regular expressions](#regular-expressions)
+  - [Picking columns](#picking-columns)
+  - [Comparing columns](#comparing-columns)
+  - [Coalesce](#coalesce)
+  - [AND, OR and NOT](#and-or-and-not)
+  - [Embedded fields](#embedded-fields)
+  - [Raw SQL fragments](#raw-sql-fragments)
+- [Group by](#group-by)
+- [Joins](#joins)
+- [Update](#update)
+- [Delete](#delete)
+- [Transactions](#transactions)
+- [Validation](#validation)
+- [License](#license)
+
+
 ## Install
 
 ```sh
