@@ -56,6 +56,11 @@ const dialect: Dialect = {
   // LIKE already ignores the case of ASCII letters
   operators: { 'ILIKE': 'LIKE', 'NOT ILIKE': 'NOT LIKE' },
   jsonOf,
+  // see `connect` for REGEXP and regexp_like(), which match the way JavaScript
+  // does. Flags are a literal, from a closed set of letters
+  match: (sql, pattern, regex) => regex.flags
+    ? `regexp_like(${sql}, ${pattern}, '${regex.flags}')`
+    : `${sql} REGEXP ${pattern}`,
   collect: (entries, filter) => {
     const object = `json_object(${entries.map(([key, sql]) => `${literal(key)}, ${sql}`).join(', ')})`;
     return `json_group_array(${object})${filter ? ` FILTER (WHERE ${filter})` : ''}`;
@@ -116,7 +121,22 @@ class BunSQLite implements IDatabase {
   }
 }
 
-const connect = (filename = ':memory:', { loggers = [] }: { loggers?: ILogger[] } = {}) => new BunSQLite(new Database(filename), loggers);
+// whether text matches a pattern, null when either is
+const matches = (text: unknown, pattern: string | null, flags = '') => text === null || pattern === null
+  ? null
+  : new RegExp(pattern, flags).test(String(text));
+
+// sqlite has the REGEXP operator, but no function behind it: `X REGEXP Y`
+// calls `regexp(Y, X)`. regexp_like() also takes flags, the way it does on
+// other databases
+const connect = (filename = ':memory:', { loggers = [] }: { loggers?: ILogger[] } = {}) => {
+  const conn = new Database(filename)
+    .function('regexp', { deterministic: true }, (pattern: string | null, text: unknown) => matches(text, pattern))
+    .function('regexp_like', { deterministic: true }, (text: unknown, pattern: string | null) => matches(text, pattern))
+    .function('regexp_like', { deterministic: true }, (text: unknown, pattern: string | null, flags: string) => matches(text, pattern, flags));
+
+  return new BunSQLite(conn, loggers);
+};
 
 export {
   connect,

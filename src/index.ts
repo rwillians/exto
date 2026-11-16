@@ -240,6 +240,7 @@ type Node =
   | { kind: 'call'; fn: Fn; arg: Node; distinct?: true }
   | { kind: 'coalesce'; nodes: [Node, ...(Node | Value)[]] }
   | { kind: 'compare'; lhs: Node; op: Op; rhs: Node | Value }
+  | { kind: 'match'; lhs: Node; regex: RegExp }
   | { kind: 'group'; op: 'AND' | 'OR'; nodes: Node[] }
   | { kind: 'collect'; fields: Field[]; filter?: Node };
 
@@ -399,6 +400,11 @@ type DialectName = 'postgres' | 'sqlite' | (string & {});
  * `entries` are its keys and their JSON values, and `filter` leaves out the
  * rows it's false for. Parameters are positional, so their SQL has to appear
  * in the given order, `filter` last.
+ *
+ * `match` tests text against a regular expression, given as the `pattern`
+ * parameter's SQL plus the regular expression itself for its flags. It
+ * throws for flags the database has no equivalent for, rather than dropping
+ * them. The text's SQL comes first, to keep parameters in order.
  */
 interface Dialect {
   name: DialectName;
@@ -408,6 +414,7 @@ interface Dialect {
   json(sql: string, path: string[], type: Primitive): string;
   jsonOf(sql: string, type: Primitive): string;
   collect(entries: [key: string, sql: string][], filter: string | undefined): string;
+  match(sql: string, pattern: string, regex: RegExp): string;
   // operators the database spells differently, e.g. ILIKE
   operators: Partial<Record<Op, string>>;
   codecs: Record<Primitive, Codec>;
@@ -576,6 +583,12 @@ const renderNode = (b: SqlBuilder, node: Node): SqlBuilder => {
       }
     }
 
+    case 'match': {
+      const sql = b.capture(() => renderNode(b, node.lhs));
+      const pattern = b.capture(() => b.param(node.regex.source));
+      return b.push(b.dialect.match(sql, pattern, node.regex));
+    }
+
     case 'group': {
       const { op, nodes } = node;
       if (nodes.length === 0) return b.push(op === 'AND' ? '1 = 1' : '1 = 0');
@@ -692,6 +705,12 @@ type Predicate<A extends string = string> = Condition<A> | Fragment<A>;
 const TEXTUAL: readonly Primitive[] = ['CITEXT', 'STRING', 'TEXT'];
 const COLUMN_OPS: readonly Op[] = ['=', '!=', '<', '<=', '>', '>=', 'IS DISTINCT FROM', 'IS NOT DISTINCT FROM'];
 
+const assertTextual = (what: string, node: Node) => {
+  if (node.kind === 'ref' && !TEXTUAL.includes((node.path.at(-1) ?? node.col).type)) {
+    raise(`${what} only takes text columns, "${[node.alias, node.col.key, ...node.path.map(field => field.key)].join('.')}" isn't one`);
+  }
+};
+
 const compare = (lhs: Operand, op: Op, rhs: unknown): Node => {
   const node = lhs[NODE];
   const fail = (message: string) => raise(`"${op}" ${message}, got ${Array.isArray(rhs) ? `[${rhs.join(', ')}]` : String(rhs)}`);
@@ -716,9 +735,7 @@ const compare = (lhs: Operand, op: Op, rhs: unknown): Node => {
     case 'ILIKE':
     case 'NOT ILIKE':
       if (typeof rhs !== 'string') fail('takes a string pattern');
-      if (node.kind === 'ref' && !TEXTUAL.includes((node.path.at(-1) ?? node.col).type)) {
-        raise(`"${op}" only takes text columns, "${[node.alias, node.col.key, ...node.path.map(field => field.key)].join('.')}" isn't one`);
-      }
+      assertTextual(`"${op}"`, node);
       break;
   }
 
@@ -773,6 +790,16 @@ const coalesce: Coalesce = (lhs: Operand, ...rest: readonly unknown[]) => operan
   nodes: [lhs[NODE], ...rest.map(item => isOperand(item) ? item[NODE] : { kind: 'value' as const, value: item })],
 }) as never;
 
+// whether text matches a regular expression. Each database has its own flavor
+// of them, and its own say on which flags it takes
+type Match = <L extends Operand<string, string | null> | Fragment>(lhs: L, regex: RegExp) => Condition<AliasesOf<L>>;
+
+const match: Match = (lhs: Operand, regex: RegExp) => {
+  if (!(regex instanceof RegExp)) raise(`"expr.match" takes a regular expression, got ${String(regex)}`);
+  assertTextual('"expr.match"', lhs[NODE]);
+  return operand({ kind: 'match', lhs: lhs[NODE], regex }) as never;
+};
+
 const isTable = (value: unknown): value is Table => typeof value === 'object' && value !== null && NAME in value;
 
 // the rows of a table (or of a projection) in a group, as a list. Rows a
@@ -807,6 +834,7 @@ const expr = Object.assign(exprOf, {
   and: group('AND'),
   or: group('OR'),
   coalesce,
+  match,
   count: Object.assign(call('COUNT') as Counted, { distinct: call('COUNT', true) as Counted }),
   sum: Object.assign(call('SUM') as Summed, { distinct: call('SUM', true) as Summed }),
   min: call('MIN') as Picked,
@@ -834,6 +862,9 @@ const assertInScope = (scope: Scope, node: Node): Node => {
     case 'compare':
       assertInScope(scope, node.lhs);
       if (node.rhs.kind !== 'value') assertInScope(scope, node.rhs);
+      break;
+    case 'match':
+      assertInScope(scope, node.lhs);
       break;
     case 'group':
       node.nodes.forEach(node => assertInScope(scope, node));

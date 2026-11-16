@@ -266,6 +266,25 @@ await from(tasks).where(tasks.parentId, 'IS DISTINCT FROM', id).all(db); // rows
 case-insensitive for ASCII letters on sqlite. Use `ILIKE` to ignore case on
 both.
 
+### Regular expressions
+
+`expr.match()` tests text against a regular expression:
+
+```ts
+await from(tasks).where(expr.match(tasks.payload.kind, /^N/)).all(db);
+await from(tasks).where(expr.match(tasks.payload.kind, /^n/i)).all(db);
+```
+
+On postgres it's `~`, or `~*` with the `i` flag, and patterns are postgres'
+own flavor of regular expressions. Flags without an equivalent there (`m`,
+`s`, `v`, `y`) throw rather than being dropped, and `g`, `d` and `u` don't
+change a match.
+
+SQLite has no regular expressions of its own, so `sqlite.connect` adds them:
+`REGEXP`, and `regexp_like(text, pattern, flags)` for a regular expression
+with flags. Both match the way JavaScript does, every flag included, and can
+be used in fragments too.
+
 ### Picking columns
 
 ```ts
@@ -334,14 +353,14 @@ await from(tasks).where(f`upper(${tasks.payload.kind})`, '=', 'PRUNE').all(db);
 ```
 
 A fragment can also be a condition of its own, to use any operator your
-database has, e.g. postgres' JSON containment and regular expressions:
+database has, e.g. postgres' JSON containment:
 
 ```ts
 await from(tasks).where(f`${tasks.payload} @> ${{ kind: 'Prune' }}`).all(db);
 
 await from(tasks)
   .where(expr.or([
-    f`${tasks.payload.kind} ~ ${'^N'}`,
+    f`${tasks.payload} @> ${{ params: { days: 30 } }}`,
     expr(tasks.status, '=', 'queued'),
   ]))
   .all(db);

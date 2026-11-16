@@ -69,6 +69,13 @@ const dialect: Dialect = {
     : undefined,
   json,
   operators: {},
+  // `i` picks the case-insensitive operator, and flags that only change how
+  // a match is repeated or reported don't matter (`y` would anchor it)
+  match: (sql, pattern, regex) => {
+    const unsupported = regex.flags.replace(/[dgiu]/g, '');
+    if (unsupported) throw new Error(`postgres has no equivalent for the "${unsupported}" flags of ${regex}`);
+    return `${sql} ${regex.flags.includes('i') ? '~*' : '~'} ${pattern}`;
+  },
   jsonOf,
   collect: (entries, filter) => {
     const object = `jsonb_build_object(${entries.map(([key, sql]) => `${literal(key)}, ${sql}`).join(', ')})`;
