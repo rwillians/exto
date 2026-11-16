@@ -11,9 +11,11 @@ describe('table', () => {
     expect(Object.keys({ ...tasks })).toEqual(keys);
   });
 
-  test('keeps "as" out of its keys', () => {
-    expect('as' in { ...tasks }).toBe(false);
-    expect(tasks.as).toBeFunction();
+  test('keeps its methods out of its keys', () => {
+    for (const method of ['as', 'pick', 'omit']) {
+      expect(method in { ...tasks }).toBe(false);
+      expect(tasks[method as keyof typeof tasks]).toBeFunction();
+    }
   });
 
   test('is shaped like its columns under an alias too', () => {
@@ -30,9 +32,33 @@ describe('table', () => {
     expect(tasks.id).not.toBe(tasks.as('t0').id);
   });
 
-  test('reserves "as"', () => {
+  test('is narrowed by pick and omit, which leave the table alone', () => {
+    expect(Object.keys(tasks.pick(['status', 'id']))).toEqual(['id', 'status']);
+    expect(Object.keys(tasks.omit(['events', 'payload']))).toEqual(keys.filter(key => key !== 'events' && key !== 'payload'));
+    expect(Object.keys(tasks.omit(['events']).pick(['id']))).toEqual(['id']);
+    expect(Object.keys(tasks)).toEqual(keys);
+  });
+
+  test('stays narrowed under an alias', () => {
+    const t0 = tasks.pick(['id']).as('t0');
+    expect(Object.keys(t0)).toEqual(['id']);
+    expect(Object.keys({ ...t0 })).toEqual(['id']);
+  });
+
+  test('is only narrowed by its columns', () => {
+    expect(() => tasks.pick(['nope' as never])).toThrow('Unknown column "nope" in table "tasks"');
+    expect(() => tasks.pick(['id']).omit(['status' as never])).toThrow('Unknown column "status" in table "tasks"');
+    expect(() => tasks.pick([])).toThrow('No columns of "tasks" are left to read');
+    expect(() => tasks.omit(keys as never)).toThrow('No columns of "tasks" are left to read');
+  });
+
+  test('reserves its methods\' names', () => {
     // @ts-expect-error "as" can't be a column
     expect(() => table('things', { as: t.string() })).toThrow('"as" is reserved');
+    // @ts-expect-error "pick" can't be a column
+    expect(() => table('things', { pick: t.string() })).toThrow('"pick" is reserved');
+    // @ts-expect-error "omit" can't be a column
+    expect(() => table('things', { omit: t.string() })).toThrow('"omit" is reserved');
   });
 });
 
@@ -80,16 +106,20 @@ assert<Equals<RequiredKeys<TaskUpdate>, never>>();
 assert<Equals<keyof UserUpdate, Exclude<keyof User, 'id'>>>();
 assert<Equals<RequiredKeys<UserUpdate>, never>>();
 
-// a table's string keys are its columns, plus `as`
-assert<Equals<Exclude<keyof typeof tasks, symbol>, 'as' | keyof Task>>();
+// a table's string keys are its columns, plus its methods
+assert<Equals<Exclude<keyof typeof tasks, symbol>, 'as' | 'pick' | 'omit' | keyof Task>>();
 
-// spreading a table leaves `as` out
+// spreading a table leaves its methods out
 const spread = { ...tasks };
 assert<Equals<Exclude<keyof typeof spread, symbol>, keyof Task>>();
 
 // an aliased table has the same columns
 const t0 = tasks.as('t0');
-assert<Equals<Exclude<keyof typeof t0, symbol>, 'as' | keyof Task>>();
+assert<Equals<Exclude<keyof typeof t0, symbol>, 'as' | 'pick' | 'omit' | keyof Task>>();
+
+// a narrowed table has only the columns it kept
+const narrowed = tasks.omit(['events']).pick(['id', 'status']).as('t1');
+assert<Equals<Exclude<keyof typeof narrowed, symbol>, 'as' | 'pick' | 'omit' | 'id' | 'status'>>();
 
 // @ts-expect-error inferred types live in `Infer`, not on the table
 tasks.infer;

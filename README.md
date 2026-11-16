@@ -304,7 +304,14 @@ await from(tasks).select({ ...tasks, parent: tasks.parentId }).all(db);
 
 await from(tasks).select({ status: tasks.status }).distinct().all(db);
 // → { status: Task['status'] }[], each status once
+
+await from(tasks).select({ ...tasks.omit(['events']) }).all(db);
+// → Omit<Task, 'events'>[]
 ```
+
+`pick` and `omit` narrow a table to some of its columns, to be spread or
+selected whole (see [joins](#joins)). `as`, `pick` and `omit` are reserved,
+so they can't be column names.
 
 ### Comparing columns
 
@@ -504,6 +511,18 @@ await from(child)
 A missing row is told apart by its primary key (or any required column)
 being null. For a table without one, the row reads null when every one of its
 columns is.
+
+Narrowed by `pick` or `omit`, a table selected as a whole reads only the
+columns it kept, and is still null when its row is missing, even when the
+primary key is left out:
+
+```ts
+await from(child)
+  .leftJoin(parent, expr(parent.id, '=', child.parentId))
+  .select({ ...child.omit(['parentId']), parent: parent.pick(['id', 'status']) })
+  .all(db);
+// → (Omit<Task, 'parentId'> & { parent: Pick<Task, 'id' | 'status'> | null })[]
+```
 
 A query only takes the tables it reads from, so referencing `child` before
 joining it is a type error.

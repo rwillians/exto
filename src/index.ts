@@ -212,6 +212,7 @@ const validate = (cols: Columns, value: unknown, options: { partial?: boolean } 
 
 const NAME = Symbol('exto.name');
 const ALIAS = Symbol('exto.alias');
+const WHOLE = Symbol('exto.whole');
 const NODE = Symbol('exto.node');
 declare const COLUMNS: unique symbol;
 declare const OPERAND: unique symbol;
@@ -272,6 +273,7 @@ type RefTo<A extends string, K extends string, C extends Column> = ColumnRef<A, 
 type Table<N extends string = string, A extends string = string, C extends Columns = Columns> = {
   readonly [NAME]: N;
   readonly [ALIAS]: A;
+  readonly [WHOLE]: Column[];
   readonly [COLUMNS]: C; // type only
 };
 
@@ -294,18 +296,38 @@ const refOf = (alias: string, col: Column, path: Column[] = []): Operand => {
 
 // a table is shaped like its columns: each enumerable property references a
 // column under the table's alias, which is its name unless `as` says
-// otherwise. The name and alias are symbols and `as` is non-enumerable, so
-// spreading a table copies only its column references
-const tableOf = (name: string, alias: string, columns: Column[]): Table => Object.defineProperties(
-  Object.fromEntries(columns.map(col => [col.key, refOf(alias, col)])),
-  {
-    [NAME]: { value: name },
-    [ALIAS]: { value: alias },
-    as: { value: (alias: string) => tableOf(name, alias, columns) },
-  },
-) as unknown as Table;
+// otherwise. The name, alias and whole table are symbols, and `as`, `pick`
+// and `omit` are non-enumerable, so spreading a table copies only its column
+// references. `pick` and `omit` narrow which columns it's read as, while the
+// query can still reference the others
+const tableOf = (name: string, alias: string, columns: Column[], picked = columns): Table => {
+  const narrow = (keys: string[], keep: boolean) => {
+    const unknown = keys.find(key => !picked.some(col => col.key === key));
+    if (unknown !== undefined) raise(`Unknown column "${unknown}" in table "${name}"`);
+
+    const narrowed = picked.filter(col => keys.includes(col.key) === keep);
+    return narrowed.length > 0 ? tableOf(name, alias, columns, narrowed) : raise(`No columns of "${name}" are left to read`);
+  };
+
+  return Object.defineProperties(
+    Object.fromEntries(picked.map(col => [col.key, refOf(alias, col)])),
+    {
+      [NAME]: { value: name },
+      [ALIAS]: { value: alias },
+      [WHOLE]: { value: columns },
+      as: { value: (alias: string) => tableOf(name, alias, columns, picked) },
+      pick: { value: (keys: string[]) => narrow(keys, true) },
+      omit: { value: (keys: string[]) => narrow(keys, false) },
+    },
+  ) as unknown as Table;
+};
 
 const columnsOf = (table: Table) => (Object.values(table) as Operand[]).map(ref => (ref[NODE] as Node & { kind: 'ref' }).col);
+
+// inserting into, updating or creating a table takes all of its columns
+const assertWhole = (table: Table, what: string) => table[WHOLE].length === columnsOf(table).length
+  ? table
+  : raise(`${what} takes a whole table, "${table[ALIAS]}" is narrowed by pick or omit`);
 
 const columnsByKey = (table: Table) => Object.fromEntries(columnsOf(table).map(col => [col.key, col]));
 
@@ -342,18 +364,20 @@ type NumericKeys<C extends Columns> = {
 }[keyof C];
 
 // type only: TypeScript leaves class methods out of a spread's type, so
-// declaring `as` as one keeps `{ ...table }` typed as just the columns, the
-// way it is at runtime
-declare class Aliasable<N extends string, C extends Columns> {
+// declaring `as`, `pick` and `omit` as ones keeps `{ ...table }` typed as
+// just the columns, the way it is at runtime
+declare class TableMethods<N extends string, A extends string, C extends Columns> {
   as<B extends string>(alias: B): DefinedTable<N, B, C>;
+  pick<K extends keyof C & string>(keys: K[]): DefinedTable<N, A, Pick<C, K>>;
+  omit<K extends keyof C & string>(keys: K[]): DefinedTable<N, A, Omit<C, K>>;
 }
 
 type DefinedTable<N extends string, A extends string, C extends Columns> = Table<N, A, C> & {
   readonly [K in keyof C & string]: RefTo<A, K, C[K]>;
-} & Aliasable<N, C>;
+} & TableMethods<N, A, C>;
 
-// `as` aliases the table
-const RESERVED = ['as'] as const;
+// `as` aliases the table, `pick` and `omit` narrow it
+const RESERVED = ['as', 'pick', 'omit'] as const;
 
 type Reserved<S> = { [K in keyof S & typeof RESERVED[number]]: never };
 
@@ -368,7 +392,7 @@ const defineTable = <N extends string, S extends Shape>(name: N, shape: S & NoIn
 
 // validates a row to be inserted into the table, filling in its defaults
 const parse = <T extends Table>(table: T, input: unknown) => {
-  const insertable = Object.fromEntries(columnsOf(table).filter(col => !col.generated).map(col => [col.key, col]));
+  const insertable = Object.fromEntries(columnsOf(assertWhole(table, '"parse"')).filter(col => !col.generated).map(col => [col.key, col]));
   return validate(insertable, input) as Infer<'insert', T>;
 };
 
@@ -825,7 +849,7 @@ const isTable = (value: unknown): value is Table => typeof value === 'object' &&
 
 type Ref = Node & { kind: 'ref' };
 
-const refsOf = (table: Table) => columnsOf(table).map((col): Ref => ({ kind: 'ref', alias: table[ALIAS], col, path: [] }));
+const refsOf = (table: Table, columns = columnsOf(table)) => columns.map((col): Ref => ({ kind: 'ref', alias: table[ALIAS], col, path: [] }));
 
 // a column that's never null tells apart a row an outer join found no match
 // for: the table's primary key, or any required one
@@ -834,7 +858,8 @@ const requiredOf = (nodes: Node[]) => nodes
   .sort((a, b) => Number(b.col.primaryKey ?? false) - Number(a.col.primaryKey ?? false))[0];
 
 // the rows of a table (or of a projection) in a group, as a list. Rows a
-// left join found no match for are left out (see `requiredOf`)
+// left join found no match for are left out (see `requiredOf`), told apart
+// by any column of the table, even one `pick` or `omit` left out
 type Collect = {
   <T extends Table>(table: T): Operand<AliasOf<T>, InferForSelect<ColumnsOf<T>>[], never>;
   <P extends Record<string, Operand>>(projection: P): Operand<AliasesOf<P[keyof P]>, Projected<P, never>[], never>;
@@ -845,7 +870,7 @@ const collect: Collect = (source: Table | Record<string, Operand>) => {
     ? [key, value[NODE]]
     : raise(`"${key}" must be a column reference or an expression`));
 
-  const required = requiredOf(isTable(source) ? refsOf(source) : fields.map(([, node]) => node));
+  const required = requiredOf(isTable(source) ? refsOf(source, source[WHOLE]) : fields.map(([, node]) => node));
   const filter = required && compare(operand(required), 'IS NOT', null);
   return operand({ kind: 'collect', fields, filter }) as never;
 };
@@ -889,7 +914,7 @@ const assertInScope = (scope: Scope, node: Node): Node => {
   switch (node.kind) {
     case 'ref': {
       const table = scope.get(node.alias);
-      if (!table || !columnsOf(table).includes(node.col)) throw new Error(`"${node.alias}.${node.col.key}" isn't part of the query`);
+      if (!table || !table[WHOLE].includes(node.col)) throw new Error(`"${node.alias}.${node.col.key}" isn't part of the query`);
       break;
     }
     case 'compare':
@@ -1076,7 +1101,7 @@ class InsertBuilder<T extends Table> {
   }
 }
 
-const into = <T extends Table>(table: T) => new InsertBuilder(table);
+const into = <T extends Table>(table: T) => new InsertBuilder(assertWhole(table, '"into"') as T);
 
 // ─── query ───────────────────────────────────────────────────────────────────
 
@@ -1090,19 +1115,27 @@ type Field = [key: string, node: Node];
 
 // a table selected under a key of its own: its columns are read as
 // `key.column` fields, and put back together into an object, or null when
-// the table's row is missing (see `requiredOf`, or every column is null when
-// none is required)
-type Nested = { key: string; fields: Field[]; required?: string };
+// the table's row is missing. A missing row is told apart by a column it
+// reads that's never null (see `requiredOf`); when `pick` or `omit` left those
+// out, by a `present` marker read as the `key` field; and for a table without
+// any, by every column being null
+type Nested = { key: string; fields: Field[]; required?: string; present?: Node };
 
 type Selected = Field | Nested;
 
 const flatten = (selected: Selected[]) => selected.flatMap(item => Array.isArray(item)
   ? [item]
-  : item.fields.map(([key, node]): Field => [`${item.key}.${key}`, node]));
+  : [
+    ...item.fields.map(([key, node]): Field => [`${item.key}.${key}`, node]),
+    ...item.present ? [[item.key, item.present] as Field] : [],
+  ]);
 
-const nest = ({ key, fields, required }: Nested, row: Row) => {
+const nest = ({ key, fields, required, present }: Nested, row: Row) => {
   const value = Object.fromEntries(fields.map(([col]) => [col, row[`${key}.${col}`]]));
-  const missing = required === undefined ? Object.values(value).every(item => item === null) : value[required] === null;
+
+  const missing = required !== undefined ? value[required] === null
+    : present !== undefined ? !row[key]
+    : Object.values(value).every(item => item === null);
 
   return missing ? null : value;
 };
@@ -1160,7 +1193,13 @@ class QueryBuilder<T extends Table, A extends string = AliasOf<T>, N extends str
       if (!isTable(value)) raise(`"${key}" must be a column reference, an expression or a table`);
 
       const refs = refsOf(value).map(ref => assertInScope(this.query.scope, ref) as Ref);
-      return { key, fields: refs.map(ref => [ref.col.key, ref]), required: requiredOf(refs)?.col.key };
+      const fields = refs.map((ref): Field => [ref.col.key, ref]);
+
+      const required = requiredOf(refs);
+      if (required) return { key, fields, required: required.col.key };
+
+      const whole = requiredOf(refsOf(value, value[WHOLE]));
+      return whole ? { key, fields, present: compare(operand(whole), 'IS NOT', null) } : { key, fields };
     });
 
     const keys = flatten(selected).map(([key]) => key);
@@ -1267,7 +1306,7 @@ class QueryBuilder<T extends Table, A extends string = AliasOf<T>, N extends str
     this.assertPlain('update');
 
     const { table, where } = this.query;
-    const assignments = parseChanges(table, changes as { set?: Row; inc?: Row });
+    const assignments = parseChanges(assertWhole(table, '"update"'), changes as { set?: Row; inc?: Row });
     if (assignments.length === 0) throw new Error('Nothing to update: both `set` and `inc` are empty');
 
     const b = renderTable(new SqlBuilder(db.dialect).push('UPDATE '), table).push(' SET ');
@@ -1386,7 +1425,7 @@ const createIndex = <T extends Table>(table: T, keys: Keys<T>[], {
 const create = {
   table: (table: Table, { ifNotExists = false }: { ifNotExists?: boolean } = {}) => ({
     onto: async (db: IDatabase) => {
-      const cols = columnsOf(table).map(col => renderColumnDefinition(db.dialect, col));
+      const cols = columnsOf(assertWhole(table, '"create.table"')).map(col => renderColumnDefinition(db.dialect, col));
       const sql = `CREATE TABLE ${ifNotExists ? 'IF NOT EXISTS ' : ''}${quote(table[NAME])} (${cols.join(', ')})`;
       await run(db, { sql, params: [] });
     },

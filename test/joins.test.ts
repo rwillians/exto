@@ -1,5 +1,5 @@
 import { beforeEach, expect, test } from 'bun:test';
-import { create, expr, from, into, t, table } from '../src';
+import { create, expr, from, into, parse, t, table } from '../src';
 import { type Task, task, tasks } from './fixtures';
 import { type Database, type Equals, type Expand, assert, suite } from './helpers';
 
@@ -275,6 +275,95 @@ suite('selected tables', (fresh) => {
   });
 });
 
+suite('narrowed tables', (fresh) => {
+  let db: Database;
+  let a: Task;
+  let b: Task;
+  let children: Task[];
+
+  beforeEach(async () => {
+    ({ db } = await fresh());
+    ({ a, b, children } = await seed(db));
+  });
+
+  const byId = <T extends { id: string }>(rows: T[]) => rows.toSorted((x, y) => x.id.localeCompare(y.id));
+
+  test('read only the columns picked', async () => {
+    const rows = await from(child)
+      .leftJoin(parent, expr(parent.id, '=', child.parentId))
+      .select({ ...child.pick(['id', 'status']), parent: parent.pick(['id', 'payload']) })
+      .all(db);
+
+    expect(byId(rows)).toEqual(byId([
+      { id: a.id, status: a.status, parent: null },
+      { id: b.id, status: b.status, parent: null },
+      ...children.map(row => ({ id: row.id, status: row.status, parent: { id: a.id, payload: a.payload } })),
+    ]));
+  });
+
+  test('read every column but those omitted', async () => {
+    const rows = await from(child)
+      .leftJoin(parent, expr(parent.id, '=', child.parentId))
+      .where(child.parentId, 'IS NOT', null)
+      .select({ ...child.omit(['parentId']), parent: parent.omit(['events']) })
+      .all(db);
+
+    const { events: _, ...rest } = a;
+    expect(byId(rows)).toEqual(byId(children.map(({ parentId: _, ...row }) => ({ ...row, parent: rest }))));
+  });
+
+  test('tell missing rows apart by the primary key, even when it is left out', async () => {
+    const rows = await from(child)
+      .leftJoin(parent, expr(parent.id, '=', child.parentId))
+      .select({ id: child.id, parent: parent.pick(['parentId']) })
+      .all(db);
+
+    expect(byId(rows)).toEqual(byId([
+      { id: a.id, parent: null },
+      { id: b.id, parent: null },
+      ...children.map(row => ({ id: row.id, parent: { parentId: null } })),
+    ]));
+  });
+
+  test('are distinct by the columns read, not by the primary key left out', async () => {
+    await into(tasks).values([task({ parentId: b.id })]).insert(db);
+
+    const query = from(child)
+      .leftJoin(parent, expr(parent.id, '=', child.parentId))
+      .select({ parent: parent.pick(['parentId']) })
+      .distinct();
+
+    expect(await query.all(db)).toEqual(expect.arrayContaining([{ parent: null }, { parent: { parentId: null } }]));
+    expect(await query.count(db)).toBe(2);
+  });
+
+  test('are collected without the rows a left join found no match for', async () => {
+    const rows = await from(parent)
+      .leftJoin(child, expr(parent.id, '=', child.parentId))
+      .where(parent.parentId, 'IS', null)
+      .groupBy([parent.id])
+      .select({ id: parent.id, children: expr.collect(child.pick(['parentId'])) })
+      .all(db);
+
+    expect(byId(rows)).toEqual(byId([
+      { id: a.id, children: children.map(() => ({ parentId: a.id })) },
+      { id: b.id, children: [] },
+    ]));
+  });
+
+  test('still let a query reference the columns left out', async () => {
+    const rows = await from(tasks.pick(['id'])).where(tasks.parentId, '=', a.id).all(db);
+    expect(byId(rows)).toEqual(byId(children.map(({ id }) => ({ id }))));
+  });
+
+  test("can't be inserted into, updated or created", async () => {
+    expect(() => into(tasks.omit(['events']))).toThrow('"into" takes a whole table, "tasks" is narrowed by pick or omit');
+    expect(() => parse(tasks.pick(['status']), {})).toThrow('"parse" takes a whole table');
+    await expect(from(tasks.pick(['id'])).update(db, { set: { attempts: 1 } } as never)).rejects.toThrow('"update" takes a whole table');
+    await expect(create.table(tasks.pick(['id'])).onto(db)).rejects.toThrow('"create.table" takes a whole table');
+  });
+});
+
 // ─── type-level ──────────────────────────────────────────────────────────────
 
 export const typeChecks = async (db: Database) => {
@@ -378,4 +467,30 @@ export const typeChecks = async (db: Database) => {
 
   // @ts-expect-error join conditions take references to the joined tables only
   from(parent).leftJoin(child, expr(parent.id, '=', tasks.parentId));
+
+  // a narrowed table reads as the columns it kept
+  const picked = await from(child)
+    .leftJoin(parent, expr(parent.id, '=', child.parentId))
+    .select({ ...child.pick(['id', 'status']), parent: parent.pick(['id', 'payload']) })
+    .all(db);
+  assert<Equals<typeof picked, { id: string; status: Task['status']; parent: Pick<Task, 'id' | 'payload'> | null }[]>>();
+
+  const omitted = await from(child)
+    .leftJoin(parent, expr(parent.id, '=', child.parentId))
+    .select({ ...child.omit(['parentId']), parent })
+    .all(db);
+  assert<Equals<Expand<(typeof omitted)[number]>, Expand<Omit<Task, 'parentId'> & { parent: Task | null }>>>();
+
+  const collected = await from(parent)
+    .leftJoin(child, expr(parent.id, '=', child.parentId))
+    .groupBy([parent.id])
+    .select({ children: expr.collect(child.pick(['id'])) })
+    .all(db);
+  assert<Equals<typeof collected, { children: { id: string }[] }[]>>();
+
+  // @ts-expect-error only the table's columns can be picked
+  child.pick(['nope']);
+
+  // @ts-expect-error a narrowed table only has the columns it kept
+  child.pick(['id']).omit(['status']);
 };
