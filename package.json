@@ -60,10 +60,9 @@
   },
   "devDependencies": {
     "@types/bun": "latest",
-    "typescript": "^7.1.0-dev.20261114.1",
     "zod": "^4.6.7"
   },
   "peerDependencies": {
-    "typescript": "^7.1.0-0"
+    "typescript": "^7.0.2"
   }
 }
